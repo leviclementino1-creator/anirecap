@@ -846,7 +846,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v14-cue-snap",
+                "matcher", "v15-finer-quote",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,
@@ -872,7 +872,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     scene_changes=scenes,
                     pad_before=0.0,
                     max_backward_snap=3.0, max_forward_snap=0.5,
-                    group_cues_gap=1.5,  # sweet spot: grupos grandes o suficiente pra LLM pegar cenas inteiras, spread distribui dentro
+                    group_cues_gap=0.5,  # mais fino = LLM diferencia cenas de Sayu early vs late (cue-snap recupera precisão)
                     mkv_path=self.mkv_path,
                     avoid_landscape=True,
                 )

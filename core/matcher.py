@@ -35,6 +35,9 @@ REGRAS IMPORTANTES:
 1. VOCÊ DEVE RETORNAR UM MATCH PRA CADA UM DOS {n_beats} BEATS. Não pule nenhum.
 2. Pra cada beat, escolha o `cue_id` (número da cena) que melhor representa
    VISUALMENTE o que está sendo narrado naquele beat.
+   REQUISITO: as cues têm textos específicos; leia-os e escolha a cue cujo
+   conteúdo mais se aproxima do que o beat narra. Não escolha por proximidade
+   temporal, escolha por CORRESPONDÊNCIA SEMÂNTICA.
 3. REGRA DE OURO — narração → imagem:
    - Se o beat é um HOOK/IMPACTO ("esse otaku saiu com DUAS garotas"),
      escolha a cena que MOSTRA visualmente esse impacto (as duas garotas
@@ -43,6 +46,12 @@ REGRAS IMPORTANTES:
      que MOSTRA o setup (ele olhando os convites, confuso).
    - Pense: "se eu fosse editor pausando no meio dessa narração, que FRAME
      o espectador precisa estar vendo pra história fazer sentido?"
+4. REGRA DE CITAÇÃO: quando a narração tem uma FALA LITERAL entre aspas ou
+   reproduzindo algo que um personagem diz ("tenho um pequeno interesse em
+   você", "nada de coisas sujas!", "ué, como assim?"), ACHE A CUE onde essa
+   fala está sendo dita no original (mesmo em inglês). Se o narrador cita
+   "dirty" ou "sujas", procure uma cue com a palavra "dirty". Essa é a
+   âncora mais precisa que existe.
 4. Pode repetir cenas se beats consecutivos falam da mesma coisa.
 5. Pode ser não-linear: a narração reorganiza a história — cenas podem
    aparecer fora da ordem cronológica do episódio.
