@@ -34,7 +34,19 @@ def choose_track(parent, tracks):
     scroll = ctk.CTkScrollableFrame(modal, width=490, height=240)
     scroll.pack(padx=20, fill="both", expand=True)
 
-    default_idx = next((i for i, t in enumerate(tracks) if t.default), 0)
+    # Prefere CC/SDH (têm descrições visuais e sonoras → matcher muito melhor)
+    # > default do mkv > primeira da lista.
+    def _preferred_default():
+        for i, t in enumerate(tracks):
+            label = (t.name or '').lower()
+            if 'cc' in label or 'caption' in label or 'sdh' in label:
+                return i
+        for i, t in enumerate(tracks):
+            if t.default:
+                return i
+        return 0
+
+    default_idx = _preferred_default()
 
     def _pick(track):
         result["value"] = track

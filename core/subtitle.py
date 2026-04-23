@@ -16,6 +16,19 @@ _TAG_RE = re.compile(r'\{.*?\}')
 _HTML_RE = re.compile(r'<[^>]+>')
 _ARROW = '-->'
 
+# Cue "descritiva" de CC: texto totalmente entre [] ou (), tipo "[footsteps]"
+# ou "(ominous music)". Útil pro matcher (ancora momentos sem diálogo) mas
+# NÃO conta pra detectar gap OP/ED — senão nunca acha o gap com CC.
+_DESCRIPTOR_RE = re.compile(r'^\s*[\[\(].*[\]\)]\s*$', re.DOTALL)
+
+
+def is_descriptor_cue(text: str) -> bool:
+    """True se a cue é descrição de cena/som (ex: '[footsteps approaching]',
+    '(ominous music)', '[Coco gasps]') em vez de diálogo falado."""
+    if not text:
+        return True
+    return bool(_DESCRIPTOR_RE.match(text.strip()))
+
 
 @dataclass
 class CleanedSubtitle:
@@ -123,6 +136,9 @@ def detect_music_gaps(
     OP normalmente tem ~90s SEM subtítulo (só instrumental + karaoke raro).
     ED similar (~60-90s). Gap > min_gap entre cues adjacentes = candidato.
 
+    Cues descritivas (CC tipo '[music]', '(theme plays)') são IGNORADAS
+    pra contagem de gap — senão OP nunca é detectada em CC tracks.
+
     Aplica padding (`pad_before` antes do gap, `pad_after` depois) pra
     englobar title cards e previews adjacentes que têm dialog "Default"
     mas visualmente pertencem à borda da OP/ED.
@@ -132,7 +148,13 @@ def detect_music_gaps(
     if not cues:
         return []
 
-    cues_sorted = sorted(cues, key=lambda c: c.start)
+    # Filtra descritivas — elas existem durante OP em CC tracks e quebrariam
+    # a detecção. Gap detectado é baseado em DIÁLOGO real.
+    dialogue_cues = [c for c in cues if not is_descriptor_cue(c.text)]
+    if not dialogue_cues:
+        return []
+
+    cues_sorted = sorted(dialogue_cues, key=lambda c: c.start)
     regions: List[Tuple[float, float]] = []
 
     # Gap inicial (0s → primeira cue)

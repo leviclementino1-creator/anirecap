@@ -83,6 +83,23 @@ def _ass_escape(text: str) -> str:
     )
 
 
+# Pontuação removida das captions (TTS preserva entonação, o visual fica limpo).
+# Mantemos "?" pra marcar perguntas.
+_PUNCT_TO_STRIP = set(',.!:;"“”‘’—…()[]<>*')
+
+
+def _clean_caption_text(text: str) -> str:
+    """Remove pontuação exceto '?' da caption word. Mantém letras, dígitos,
+    acentos, apóstrofes internos (contrações raras), hífens em palavras
+    compostas (via replacement) e o marcador de pergunta."""
+    if not text:
+        return text
+    result = ''.join(ch for ch in text if ch not in _PUNCT_TO_STRIP)
+    # Aspas simples comuns também
+    result = result.replace("'", "").replace("`", "")
+    return result.strip()
+
+
 def generate_ass(
     alignment: Alignment,
     output_path: str,
@@ -115,6 +132,7 @@ def generate_ass(
             display_end = end + hold_last_extra
 
         safe = _ass_escape(text)
+        safe = _clean_caption_text(safe)
         if not safe:
             continue
         lines.append(
