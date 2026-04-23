@@ -844,9 +844,28 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
             self.after(0, self.log, f"🎞️ {len(scenes)} mudanças de cena detectadas.")
 
+            # 2b. Filtra OP (primeiros 90s) e ED (últimos 90s) das cues
+            # pra matcher não pegar créditos/música como cena. Duração do mkv
+            # via ffprobe (cacheada pela API do audio_post).
+            from core.audio_post import _ffprobe_duration
+            mkv_dur = _ffprobe_duration(self.mkv_path, self.cfg.get("binaries_dir", ""))
+            if mkv_dur > 200:  # sanity: mkv válido de pelo menos 3min20
+                op_end = 90.0
+                ed_start = mkv_dur - 90.0
+                cues_for_match = [
+                    c for c in self.cues if op_end <= c.start <= ed_start
+                ]
+                self.after(
+                    0, self.log,
+                    f"🚫 Filtrou OP/ED: {len(self.cues)} → {len(cues_for_match)} cues "
+                    f"(exclui 0-{op_end:.0f}s e {ed_start:.0f}-{mkv_dur:.0f}s)",
+                )
+            else:
+                cues_for_match = self.cues
+
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v15b-chunkprio",
+                "matcher", "v15c-chunkprio-opedfilter",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,
@@ -864,7 +883,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if not llm_output:
                 self.after(0, self.log, "🤖 Consultando LLM pra casar beats com cenas...")
                 plan = matcher.match_beats_to_cues(
-                    beats=beats, cues=self.cues,
+                    beats=beats, cues=cues_for_match,
                     summary=self.summary_text,
                     api_key=self.cfg["navy_api_key"],
                     base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
@@ -913,7 +932,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 except Exception as e:
                     self.after(0, self.log, f"[AVISO] Cache corrompido, refazendo: {e}")
                     plan = matcher.match_beats_to_cues(
-                        beats=beats, cues=self.cues,
+                        beats=beats, cues=cues_for_match,
                         summary=self.summary_text,
                         api_key=self.cfg["navy_api_key"],
                         base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
