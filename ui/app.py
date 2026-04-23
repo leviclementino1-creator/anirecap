@@ -846,7 +846,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v13-pure-spread",
+                "matcher", "v14-cue-snap",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,

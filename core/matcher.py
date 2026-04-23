@@ -295,6 +295,12 @@ def match_beats_to_cues(
         max_forward=max_forward_snap,
     )
 
+    # Snap pra cue original (subtítulo individual) mais próxima: depois do
+    # spread, cada video_start fica na média do grupo — mas a fala específica
+    # está numa cue específica. Snap pra cue real dá precisão semântica
+    # (começa exatamente quando alguém fala algo naquele intervalo).
+    _snap_to_nearest_cue(results, cues, max_drift=4.0)
+
     # Safety net anti-landscape: verifica se cada video_start tem rosto; se
     # não, tenta mover pra próxima scene change dentro da janela.
     if avoid_landscape and mkv_path and os.path.isfile(mkv_path):
@@ -303,6 +309,45 @@ def match_beats_to_cues(
         )
 
     return results
+
+
+def _snap_to_nearest_cue(
+    results: List[SceneMatch],
+    cues: List[Cue],
+    max_drift: float = 2.5,
+) -> None:
+    """Move cada match pro timestamp de uma cue original (subtítulo
+    individual) dentro de `max_drift` segundos. Garante que cada beat
+    começa num momento onde uma fala REAL existe no episódio, não num
+    ponto arbitrário do grupo.
+
+    Evita usar a mesma cue pra 2 beats diferentes (cada um pega uma cue
+    exclusiva, quando possível).
+    """
+    if not cues:
+        return
+
+    used = set()
+    # Ordena por video_start pra processar na ordem temporal do short
+    # (beats iniciais pegam primeiro a cue mais próxima)
+    by_order = sorted(range(len(results)), key=lambda i: results[i].video_start)
+
+    for idx in by_order:
+        m = results[idx]
+        target = m.video_start
+        candidates = [
+            c for c in cues
+            if abs(c.start - target) <= max_drift and c.start not in used
+        ]
+        if not candidates:
+            continue
+        best = min(candidates, key=lambda c: abs(c.start - target))
+        if abs(best.start - target) > 0.05:  # só move se mudança significativa
+            m.video_start = best.start
+            m.video_end = best.start + m.beat.duration
+            used.add(best.start)
+        else:
+            used.add(best.start)  # marca como ocupada mesmo sem mover
 
 
 def _avoid_landscape_pass(
