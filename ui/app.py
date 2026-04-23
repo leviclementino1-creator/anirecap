@@ -853,33 +853,43 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             from core.audio_post import _ffprobe_duration
             mkv_dur = _ffprobe_duration(self.mkv_path, self.cfg.get("binaries_dir", ""))
 
+            # Parte 1: carrega cues SEM style "Signs" (title cards, placas)
+            # que confundem o matcher. Transcript principal mantém essas.
+            if self.subtitle_path:
+                cues_no_signs = subtitle.load_cues_for_matcher(
+                    self.subtitle_path, exclude_signs=True,
+                )
+            else:
+                cues_no_signs = self.cues
+
+            # Parte 2: detecta regiões de OP/ED (estilo ou gap)
             regions = []
             if self.subtitle_path:
                 regions.extend(subtitle.detect_op_ed_regions_by_style(self.subtitle_path))
-            regions.extend(subtitle.detect_music_gaps(self.cues, mkv_duration=mkv_dur))
+            regions.extend(subtitle.detect_music_gaps(cues_no_signs, mkv_duration=mkv_dur))
 
-            # Remove duplicatas/overlaps
             if regions:
                 regions = sorted(set((round(a, 2), round(b, 2)) for a, b in regions))
 
             if regions:
-                cues_for_match = subtitle.filter_cues_outside_regions(self.cues, regions)
+                cues_for_match = subtitle.filter_cues_outside_regions(cues_no_signs, regions)
                 regions_str = ", ".join(f"{a:.0f}-{b:.0f}s" for a, b in regions)
                 self.after(
                     0, self.log,
-                    f"🚫 Região sem conteúdo narrativo: {regions_str} "
-                    f"({len(self.cues)} → {len(cues_for_match)} cues usadas)",
+                    f"🚫 Região bloqueada: {regions_str} — "
+                    f"{len(self.cues)} → {len(cues_for_match)} cues "
+                    f"(signs excluído + OP/ED)",
                 )
             else:
-                cues_for_match = self.cues
+                cues_for_match = cues_no_signs
                 self.after(
                     0, self.log,
-                    "ℹ️ Nenhum gap longo detectado — usando todas as cues",
+                    f"ℹ️ Sem OP/ED detectado — {len(self.cues)} → {len(cues_for_match)} cues (signs excluído)",
                 )
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v15f-gap-pad",
+                "matcher", "v16a-signs-quotefuzzy",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,

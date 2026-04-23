@@ -223,3 +223,49 @@ def filter_cues_outside_regions(cues: List[Cue], regions: List[Tuple[float, floa
     def _in_region(t: float) -> bool:
         return any(a <= t <= b for a, b in regions)
     return [c for c in cues if not _in_region(c.start)]
+
+
+def load_cues_for_matcher(file_path: str, exclude_signs: bool = True) -> List[Cue]:
+    """Versão de load_subtitle pro matcher: opcionalmente filtra cues de
+    style 'Signs' (placas/títulos na tela) que não representam diálogo de
+    personagem e causam matches ruins (ex: title cards após OP).
+
+    Só funciona em .ass; .srt é retornado sem filtro.
+    """
+    if not file_path.lower().endswith('.ass') or not exclude_signs:
+        return load_subtitle(file_path).cues
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        return load_subtitle(file_path).cues
+
+    cues: List[Cue] = []
+    for line in lines:
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(',', 9)
+        if len(parts) <= 9:
+            continue
+        style = parts[3].lower()
+        text = parts[9].strip()
+
+        # Pula música/OP/ED (já era antes)
+        if any(s in style for s in _SONG_STYLES) or '♪' in text or '♫' in text:
+            continue
+        # Pula texto on-screen (placas, títulos de episódio)
+        if 'sign' in style or 'title' in style or 'logo' in style:
+            continue
+
+        text = _TAG_RE.sub('', text)
+        text = text.replace('\\N', ' ').replace('\\n', ' ')
+        if not text:
+            continue
+        try:
+            start = _ass_ts_to_seconds(parts[1])
+            end = _ass_ts_to_seconds(parts[2])
+            cues.append(Cue(start=start, end=end, text=text))
+        except Exception:
+            continue
+    return cues

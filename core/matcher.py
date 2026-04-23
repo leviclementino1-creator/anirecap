@@ -310,6 +310,10 @@ def match_beats_to_cues(
     # (começa exatamente quando alguém fala algo naquele intervalo).
     _snap_to_nearest_cue(results, cues, max_drift=4.0)
 
+    # Fuzzy NARROW: só pra beats com aspas (fala literal citada). Ajuda
+    # casos tipo "nada de coisas sujas" → cue com "dirty" exato.
+    _fuzzy_refine_quoted_beats(results, cues)
+
     # Safety net anti-landscape: verifica se cada video_start tem rosto; se
     # não, tenta mover pra próxima scene change dentro da janela.
     if avoid_landscape and mkv_path and os.path.isfile(mkv_path):
@@ -318,6 +322,85 @@ def match_beats_to_cues(
         )
 
     return results
+
+
+_PT_EN_FOR_QUOTES = {
+    "sujas": ["dirty"], "sujo": ["dirty"],
+    "criança": ["kid", "child"], "crianças": ["kid", "child"],
+    "abrace": ["hug", "arm around"], "abraço": ["hug", "arm around"],
+    "interesse": ["interest"], "gamada": ["interest", "crush"],
+    "namorado": ["boyfriend", "candidate"], "candidato": ["candidate"],
+    "irmãzinha": ["little sis", "sister"], "vizinha": ["neighbor"],
+    "dança": ["dance"], "dancinha": ["dance"], "dancinhas": ["dance"],
+    "fotos": ["photo"], "caretas": ["funny face", "face"],
+    "revezar": ["rotate", "take turns", "hour each"],
+    "hotel": ["hotel"], "cinema": ["movie", "cinema"],
+    "fliperama": ["arcade"], "glittermon": ["glittermon"],
+    "fanbook": ["fan book", "fanbook"],
+    "como assim": ["what", "huh"], "ué": ["what", "huh"],
+}
+
+
+def _fuzzy_refine_quoted_beats(
+    results: List[SceneMatch],
+    all_cues: List[Cue],
+    min_distance_to_override: float = 10.0,
+) -> int:
+    """Fuzzy NARROW: só pra beats com aspas na narração. Extrai keywords PT,
+    traduz e busca cues com mais keywords-hit que a atual. Sobrescreve só
+    quando há melhora SIGNIFICATIVA (>=2 keywords a mais) E distância > 10s
+    (pra não mexer em matches já próximos).
+
+    Versão conservadora do fuzzy — só ataca casos claros como
+    'nada de coisas sujas' → cue com 'dirty'.
+    """
+    import re
+    moved = 0
+
+    for m in results:
+        text = m.beat.text
+        # Só processa se tem aspas na narração
+        if '"' not in text:
+            continue
+
+        text_lower = text.lower()
+        en_keywords = set()
+        for pt_word, en_list in _PT_EN_FOR_QUOTES.items():
+            if pt_word in text_lower:
+                en_keywords.update(en_list)
+        if len(en_keywords) < 1:
+            continue
+
+        # Score cue atual
+        current_score = 0
+        if m.cue:
+            cue_lower = m.cue.text.lower()
+            current_score = sum(1 for kw in en_keywords if kw.lower() in cue_lower)
+
+        # Score todas as cues
+        best = None
+        best_score = current_score
+        for cue in all_cues:
+            cue_lower = cue.text.lower()
+            score = sum(1 for kw in en_keywords if kw.lower() in cue_lower)
+            if score > best_score:
+                best = cue
+                best_score = score
+
+        if best is None:
+            continue
+        if best_score - current_score < 1:
+            continue
+        if abs(best.start - m.video_start) < min_distance_to_override:
+            continue
+
+        m.video_start = best.start
+        m.video_end = best.start + m.beat.duration
+        m.snapped = True
+        m.why = f"[fuzzy-quote +{best_score}kw] {m.why}"
+        moved += 1
+
+    return moved
 
 
 def _snap_to_nearest_cue(
