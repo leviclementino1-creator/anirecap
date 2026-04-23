@@ -115,17 +115,17 @@ def detect_music_gaps(
     mkv_duration: float = 0.0,
     min_gap: float = 45.0,
     min_end_gap: float = 25.0,
+    pad_before: float = 5.0,
+    pad_after: float = 5.0,
 ) -> List[Tuple[float, float]]:
     """Detecta regiões de OP/ED/música analisando gaps no diálogo.
 
     OP normalmente tem ~90s SEM subtítulo (só instrumental + karaoke raro).
     ED similar (~60-90s). Gap > min_gap entre cues adjacentes = candidato.
 
-    Também considera:
-    - Gap INICIAL: se a primeira cue de diálogo está depois de min_gap,
-      a janela 0→first_cue é OP (ou pré-OP).
-    - Gap FINAL: se depois da última cue sobra > min_end_gap de vídeo,
-      essa janela é ED.
+    Aplica padding (`pad_before` antes do gap, `pad_after` depois) pra
+    englobar title cards e previews adjacentes que têm dialog "Default"
+    mas visualmente pertencem à borda da OP/ED.
 
     Requer `mkv_duration` pra detectar o gap final. Se 0, ignora.
     """
@@ -153,6 +153,13 @@ def detect_music_gaps(
         last_end = cues_sorted[-1].end
         if mkv_duration - last_end >= min_end_gap:
             regions.append((last_end, mkv_duration))
+
+    # Aplica padding: expande cada região pra fora
+    if pad_before > 0 or pad_after > 0:
+        regions = [
+            (max(0.0, a - pad_before), b + pad_after)
+            for a, b in regions
+        ]
 
     return regions
 

@@ -879,7 +879,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v15e-gap-detect",
+                "matcher", "v15f-gap-pad",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,
