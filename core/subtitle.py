@@ -7,7 +7,7 @@ O texto limpo reproduz exatamente o comportamento do app 1.2.4:
 """
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 from core.cue import Cue
 
@@ -108,3 +108,111 @@ def load_subtitle(file_path: str) -> CleanedSubtitle:
         cues = parse_srt(lines)
     plain = '\n'.join(c.text for c in cues)
     return CleanedSubtitle(cues=cues, plain_text=plain)
+
+
+def detect_music_gaps(
+    cues: List[Cue],
+    mkv_duration: float = 0.0,
+    min_gap: float = 45.0,
+    min_end_gap: float = 25.0,
+) -> List[Tuple[float, float]]:
+    """Detecta regiões de OP/ED/música analisando gaps no diálogo.
+
+    OP normalmente tem ~90s SEM subtítulo (só instrumental + karaoke raro).
+    ED similar (~60-90s). Gap > min_gap entre cues adjacentes = candidato.
+
+    Também considera:
+    - Gap INICIAL: se a primeira cue de diálogo está depois de min_gap,
+      a janela 0→first_cue é OP (ou pré-OP).
+    - Gap FINAL: se depois da última cue sobra > min_end_gap de vídeo,
+      essa janela é ED.
+
+    Requer `mkv_duration` pra detectar o gap final. Se 0, ignora.
+    """
+    if not cues:
+        return []
+
+    cues_sorted = sorted(cues, key=lambda c: c.start)
+    regions: List[Tuple[float, float]] = []
+
+    # Gap inicial (0s → primeira cue)
+    first = cues_sorted[0]
+    if first.start >= min_gap:
+        regions.append((0.0, first.start))
+
+    # Gaps entre cues consecutivas
+    for i in range(len(cues_sorted) - 1):
+        end_prev = cues_sorted[i].end
+        start_next = cues_sorted[i + 1].start
+        gap = start_next - end_prev
+        if gap >= min_gap:
+            regions.append((end_prev, start_next))
+
+    # Gap final (última cue → fim do mkv)
+    if mkv_duration > 0:
+        last_end = cues_sorted[-1].end
+        if mkv_duration - last_end >= min_end_gap:
+            regions.append((last_end, mkv_duration))
+
+    return regions
+
+
+def detect_op_ed_regions_by_style(file_path: str) -> List[Tuple[float, float]]:
+    """Detecta OP/ED via estilo das cues no .ass. Nem todo anime marca;
+    quando não marca, usa detect_music_gaps como fallback no caller.
+    """
+    if not file_path.lower().endswith('.ass'):
+        return []
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+
+    song_times: List[Tuple[float, float]] = []
+    for line in lines:
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(',', 9)
+        if len(parts) <= 9:
+            continue
+        style = parts[3].lower()
+        text = parts[9].strip()
+        is_song_style = any(s in style for s in _SONG_STYLES)
+        has_song_symbol = '♪' in text or '♫' in text
+        if not (is_song_style or has_song_symbol):
+            continue
+        try:
+            start = _ass_ts_to_seconds(parts[1])
+            end = _ass_ts_to_seconds(parts[2])
+            if end > start:
+                song_times.append((start, end))
+        except Exception:
+            pass
+
+    if not song_times:
+        return []
+
+    song_times.sort()
+    regions: List[Tuple[float, float]] = []
+    cur_start, cur_end = song_times[0]
+    for s, e in song_times[1:]:
+        if s - cur_end < 10.0:
+            cur_end = max(cur_end, e)
+        else:
+            regions.append((cur_start, cur_end))
+            cur_start, cur_end = s, e
+    regions.append((cur_start, cur_end))
+    # Só retorna se as regiões são longas (>30s) — evita falsos positivos
+    # de on-screen text que também usa estilo "Song"
+    return [(a, b) for a, b in regions if b - a > 30.0]
+
+
+def filter_cues_outside_regions(cues: List[Cue], regions: List[Tuple[float, float]]) -> List[Cue]:
+    """Devolve as cues cujo start NÃO cai dentro de nenhuma região bloqueada."""
+    if not regions:
+        return cues
+    def _in_region(t: float) -> bool:
+        return any(a <= t <= b for a, b in regions)
+    return [c for c in cues if not _in_region(c.start)]

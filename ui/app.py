@@ -64,6 +64,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.short_script_text = ""
         self.last_narration = None  # TTSResult
         self.mkv_path = ""           # caminho do .mkv pra scene detect + cut
+        self.subtitle_path = ""      # .ass/.srt extraído (pra detectar OP/ED)
         self.scene_plan = []         # List[SceneMatch] depois de 3a
 
         # Rótulo da animação de loading — muda por etapa
@@ -300,6 +301,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, self.log, "Limpando transcript base...")
             result = subtitle.load_subtitle(file_path)
             self.cues = result.cues
+            self.subtitle_path = file_path
             self.transcript_text = result.plain_text
             self.summary_text = ""
             self.short_script_text = ""
@@ -844,28 +846,40 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
             self.after(0, self.log, f"🎞️ {len(scenes)} mudanças de cena detectadas.")
 
-            # 2b. Filtra OP (primeiros 90s) e ED (últimos 90s) das cues
-            # pra matcher não pegar créditos/música como cena. Duração do mkv
-            # via ffprobe (cacheada pela API do audio_post).
+            # 2b. Detecta regiões de OP/ED. Duas estratégias combinadas:
+            # (1) Estilo "OP/ED/Song" no .ass — funciona se o ripper tagueou.
+            # (2) Gaps longos no diálogo (>45s) — funciona com SubsPlease etc
+            #     que deixam OP sem subtítulo algum.
             from core.audio_post import _ffprobe_duration
             mkv_dur = _ffprobe_duration(self.mkv_path, self.cfg.get("binaries_dir", ""))
-            if mkv_dur > 200:  # sanity: mkv válido de pelo menos 3min20
-                op_end = 90.0
-                ed_start = mkv_dur - 90.0
-                cues_for_match = [
-                    c for c in self.cues if op_end <= c.start <= ed_start
-                ]
+
+            regions = []
+            if self.subtitle_path:
+                regions.extend(subtitle.detect_op_ed_regions_by_style(self.subtitle_path))
+            regions.extend(subtitle.detect_music_gaps(self.cues, mkv_duration=mkv_dur))
+
+            # Remove duplicatas/overlaps
+            if regions:
+                regions = sorted(set((round(a, 2), round(b, 2)) for a, b in regions))
+
+            if regions:
+                cues_for_match = subtitle.filter_cues_outside_regions(self.cues, regions)
+                regions_str = ", ".join(f"{a:.0f}-{b:.0f}s" for a, b in regions)
                 self.after(
                     0, self.log,
-                    f"🚫 Filtrou OP/ED: {len(self.cues)} → {len(cues_for_match)} cues "
-                    f"(exclui 0-{op_end:.0f}s e {ed_start:.0f}-{mkv_dur:.0f}s)",
+                    f"🚫 Região sem conteúdo narrativo: {regions_str} "
+                    f"({len(self.cues)} → {len(cues_for_match)} cues usadas)",
                 )
             else:
                 cues_for_match = self.cues
+                self.after(
+                    0, self.log,
+                    "ℹ️ Nenhum gap longo detectado — usando todas as cues",
+                )
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v15c-chunkprio-opedfilter",
+                "matcher", "v15e-gap-detect",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,
