@@ -82,11 +82,15 @@ def chat_completion(
     model: str,
     messages: List[Dict],
     timeout: float = 180.0,
+    temperature: float = None,
 ) -> str:
     """Versão não-streaming. Retorna a string completa ou levanta NavyError.
 
     Usado como fallback quando o streaming devolve 0 chunks (Gemini via Navy
     às vezes retorna stream vazio sem reportar erro).
+
+    `temperature=0` força determinismo (útil pra tarefas de classificação
+    como o matcher). Se None, usa o default do servidor.
     """
     if not api_key:
         raise NavyError("API key vazia")
@@ -97,6 +101,8 @@ def chat_completion(
         "Content-Type": "application/json",
     }
     payload = {"model": model, "messages": messages}
+    if temperature is not None:
+        payload["temperature"] = temperature
 
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     resp.encoding = "utf-8"

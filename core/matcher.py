@@ -224,6 +224,7 @@ def match_beats_to_cues(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         timeout=240.0,
+        temperature=0,  # determinismo: mesmo input sempre dá mesmo output
     )
 
     body = _extract_json_block(raw)
