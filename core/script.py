@@ -65,9 +65,14 @@ VOZ FALADA — CRÍTICO:
 - Linguagem de fala, não de livro. Use "aí", "mano", "só que", "tipo",
   "olha só", "e o pior", "cara", "tá ligado".
 - Conectivos rápidos entre blocos ("então", "mas aí", "enfim").
-- Vocabulário otaku quando couber ("farmando aura", "beta", "toda bobinha",
-  "plot twist", "entrega o ouro", "tá gamada") — sem forçar.
-- Nada de markdown, títulos, aspas envolvendo o todo, bullets.
+- Vocabulário otaku moderno quando couber, SEM FORÇAR: "toda bobinha",
+  "plot twist", "tá gamada", "beta", "otaku raiz".
+- NÃO use expressões regionais obscuras ou datadas:
+  * "entrega o ouro"   → use "conta tudo" / "revela" / "solta"
+  * "bagunçar o coreto" → use "causar confusão" / "complicar tudo"
+  * "farmando aura"    → use só se o contexto é claríssimo, senão corta
+  * Qualquer gíria que precise explicação está PROIBIDA.
+- Nada de markdown, hashtags (#), asteriscos (*), títulos, bullets.
 
 CORTE IMPIEDOSO:
 - Remova detalhes secundários.
