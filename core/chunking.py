@@ -8,9 +8,11 @@ from typing import List
 
 from core.tts import Alignment
 
-# Prioridade de quebra: ponto final > vírgula/ponto-e-vírgula > traço/reticências.
-_HARD_PUNCT = set(".!?")
-_SOFT_PUNCT = set(",;:—…")
+# Prioridade de quebra:
+# - FORTE: fim de sentença ou preâmbulo de fala ("Ela disse:").
+# - FRACA: pausas curtas, só quebram se já estivermos perto do limite.
+_HARD_PUNCT = set(".!?:")
+_SOFT_PUNCT = set(",;—…")
 
 
 @dataclass
@@ -31,15 +33,21 @@ class NarrationBeat:
 
 def chunk_by_time(
     alignment: Alignment,
-    target_seconds: float = 2.5,
-    max_seconds: float = 3.5,
+    target_seconds: float = 2.0,
+    soft_threshold: float = 3.0,
+    max_seconds: float = 4.5,
 ) -> List[NarrationBeat]:
-    """Varre caracteres acumulando um beat. Quebra quando:
-    - elapsed ≥ target_seconds E caractere é pontuação forte (. ! ?)
-    - elapsed ≥ target_seconds E caractere é pontuação suave (, ; : — …)
-    - elapsed ≥ max_seconds — força corte na última quebra de palavra disponível
+    """Quebra priorizando pontuação FORTE (fim de sentença/preâmbulo) sobre
+    FRACA (pausas) pra evitar cortes no meio da ideia.
 
-    Sempre fecha no char que disparou a quebra, pra manter pontuação visualmente.
+    Hierarquia:
+    - Elapsed < target_seconds          → nunca quebra
+    - target ≤ elapsed < soft_threshold → quebra SÓ em HARD (. ! ? :)
+    - soft_threshold ≤ elapsed < max    → aceita também SOFT (, ; — …)
+    - elapsed ≥ max_seconds             → força quebra no último espaço
+
+    Com isso "Takuya pede que, se ele ganhar, ela o abrace." vira 1 beat só,
+    porque ignora as vírgulas do meio e espera o ponto final.
     """
     chars = alignment.characters
     starts = alignment.starts
@@ -61,7 +69,7 @@ def chunk_by_time(
                 index=len(beats) + 1,
             ))
 
-    last_space_idx = None  # última quebra de palavra vista (pra corte forçado)
+    last_space_idx = None  # última quebra de palavra (pra corte forçado)
 
     for i, c in enumerate(chars):
         if c == ' ':
@@ -74,12 +82,12 @@ def chunk_by_time(
 
         if elapsed >= target_seconds and c in _HARD_PUNCT:
             should_break = True
-        elif elapsed >= target_seconds and c in _SOFT_PUNCT:
+        elif elapsed >= soft_threshold and c in _SOFT_PUNCT:
             should_break = True
         elif elapsed >= max_seconds:
-            # força corte; prefere quebrar numa palavra recente
+            # Último recurso: força corte na última palavra antes do limite
             if last_space_idx is not None and last_space_idx > block_start_idx:
-                break_idx = last_space_idx - 1  # até antes do espaço
+                break_idx = last_space_idx - 1
                 break_time = ends[break_idx] if break_idx >= 0 else ends[i]
             should_break = True
 

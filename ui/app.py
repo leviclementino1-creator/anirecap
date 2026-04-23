@@ -793,10 +793,10 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             from utils.paths import application_path as _app_path
             app_root = _app_path()
 
-            # 1. Chunk da narração em beats (granular pra short)
+            # 1. Chunk da narração em beats (prioriza pontuação forte)
             beats = chunking.chunk_by_time(
                 self.last_narration.alignment,
-                target_seconds=1.8, max_seconds=2.6,
+                target_seconds=2.0, soft_threshold=3.5, max_seconds=5.0,
             )
             self.is_loading = False
             self.after(0, self._clear_loading_line)
@@ -846,7 +846,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             # 3. Matcher LLM (via non-stream, com cache)
             cache_parts = [
-                "matcher", "v15-finer-quote",
+                "matcher", "v15b-chunkprio",
                 self.selected_model,
                 matcher.MATCHER_PROMPT,
                 self.short_script_text,
