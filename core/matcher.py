@@ -370,66 +370,45 @@ def _spread_consecutive_same_cue(
     max_backward: float,
     max_forward: float,
 ) -> None:
-    """Stitch + spread.
+    """Spread puro: para cada cue usada por múltiplos beats (consecutivos ou
+    não), distribui os `video_start` igualmente ao longo da duração da cena.
 
-    Algoritmo:
-    1. Identifica RUNS — grupos de beats CONSECUTIVOS que apontam pra mesma cue.
-    2. Múltiplas runs da mesma cue são distribuídas na duração da cena
-       (run 0 no start, run 1 a 1/N da cena, etc.).
-    3. Dentro de uma run, o primeiro beat pega o start distribuído (com snap);
-       os seguintes STITCHAM — cada um começa exatamente onde o anterior acabou.
+    Consequência: beats consecutivos na mesma cena mostram MOMENTOS DIFERENTES
+    dela em vez de uma tomada contínua longa. Ideal pro ritmo de short —
+    evita planos de 10-15s segurados só porque N beats caíram na mesma cue.
 
-    Efeito visual:
-    - 3 beats consecutivos na mesma cena → uma tomada contínua de 7.5s
-    - 2 beats não-consecutivos na mesma cena → duas tomadas diferentes dela
-    - Mix → cada run stitcha internamente; runs entre si ficam em pontos distintos
+    Versão anterior fazia stitch (continuação) pros consecutivos, criando
+    tomadas longas. Agora é sempre spread.
     """
     if len(results) < 2:
         return
 
-    # 1. Identifica runs consecutivas
-    runs = []  # List[Tuple[cue_identity, start_idx, end_idx_exclusive]]
-    i = 0
-    while i < len(results):
-        j = i + 1
-        while j < len(results) and results[j].cue is results[i].cue:
-            j += 1
-        runs.append((id(results[i].cue) if results[i].cue else None, i, j))
-        i = j
-
-    # 2. Agrupa runs por cue identity
-    runs_by_cue = {}
-    for cue_key, s, e in runs:
-        if cue_key is None:
+    # Agrupa TODOS os índices de beats por cue (em ordem de narração)
+    cue_indices = {}
+    for idx, m in enumerate(results):
+        if m.cue is None:
             continue
-        runs_by_cue.setdefault(cue_key, []).append((s, e))
+        key = id(m.cue)
+        cue_indices.setdefault(key, []).append(idx)
 
-    # 3. Pra cada cue com múltiplas runs, distribui os starts de cada run
-    for cue_key, run_list in runs_by_cue.items():
-        cue = results[run_list[0][0]].cue
+    for key, indices in cue_indices.items():
+        if len(indices) < 2:
+            continue  # único beat nessa cue — não mexer
+
+        cue = results[indices[0]].cue
         cue_dur = max(cue.end - cue.start, 0.1)
-        n_runs = len(run_list)
-        step = cue_dur / n_runs if n_runs > 1 else 0.0
+        n = len(indices)
+        step = cue_dur / n  # distribui uniformemente ao longo da cena
 
-        for k, (rs, re) in enumerate(run_list):
-            # Primeiro beat da run: pega o slot distribuído (se houver >1 run)
-            if n_runs > 1:
-                raw = cue.start + k * step
-                snapped = snap_to_scene(
-                    raw, scene_changes,
-                    max_backward=max_backward, max_forward=max_forward,
-                )
-                first = results[rs]
-                if abs(snapped - first.video_start) > 0.3:
-                    first.video_start = snapped
-                    first.snapped = abs(snapped - raw) > 0.01
-                    first.video_end = first.video_start + first.beat.duration
-
-            # Beats subsequentes da run: STITCHAM (continuação contínua)
-            for idx in range(rs + 1, re):
-                prev = results[idx - 1]
-                curr = results[idx]
-                curr.video_start = prev.video_end
-                curr.video_end = curr.video_start + curr.beat.duration
-                # Sem snap — é continuação, não corte novo
-                curr.snapped = False
+        for k, idx in enumerate(indices):
+            m = results[idx]
+            raw = cue.start + k * step
+            snapped = snap_to_scene(
+                raw, scene_changes,
+                max_backward=max_backward, max_forward=max_forward,
+            )
+            # Só aplica se for materialmente diferente da posição atual
+            if abs(snapped - m.video_start) > 0.3:
+                m.video_start = snapped
+                m.snapped = abs(snapped - raw) > 0.01
+                m.video_end = m.video_start + m.beat.duration
