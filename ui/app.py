@@ -1,0 +1,962 @@
+"""Janela principal do Ancopy.
+
+Toda a camada de UI vive aqui; parsing, LLM e update são delegados para
+`core/`, `providers/` e `updater.py`. A Fase 0 preserva o fluxo do app 1.2.4:
+carregar .srt/.ass, limpar transcript, gerar roteiro estilo shorts.
+"""
+import ctypes
+import os
+import tempfile
+import threading
+import time
+
+import customtkinter as ctk
+from tkinter import filedialog
+from tkinterdnd2 import TkinterDnD, DND_FILES
+
+import config
+import updater
+import json as _json
+import shutil as _shutil
+
+from core import (
+    audio_post, cache, captions, chunking, matcher, mkv,
+    scene_detect, script, subtitle, tts, video,
+)
+from providers.navy import NavyError
+from ui import settings_modal, style, track_selector, update_modal
+from utils.binaries import BinaryNotFound
+from utils.paths import resource_path
+
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ajk.ancopy.app.1.0')
+except Exception:
+    pass
+
+
+class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
+    def __init__(self):
+        super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
+
+        ctk.set_appearance_mode("Dark")
+        ctk.set_default_color_theme("blue")
+
+        self.title(f"Ancopy v{config.VERSAO_ATUAL}")
+        self.geometry("650x550")
+        self.resizable(False, False)
+
+        self.cfg = config.load()
+        self.selected_model = self.cfg.get("selected_model") or config.DEFAULT_MODEL
+
+        self.is_loading = False
+        self.loading_dots_count = 0
+
+        try:
+            self.iconbitmap(resource_path("Ancopy_icon.ico"))
+        except Exception:
+            pass
+
+        # Estado do pipeline — cada etapa preenche seu campo e libera a próxima.
+        self.cues = []
+        self.transcript_text = ""
+        self.summary_text = ""
+        self.short_script_text = ""
+        self.last_narration = None  # TTSResult
+        self.mkv_path = ""           # caminho do .mkv pra scene detect + cut
+        self.scene_plan = []         # List[SceneMatch] depois de 3a
+
+        # Rótulo da animação de loading — muda por etapa
+        self.loading_label = "Processando"
+
+        # diretório de trabalho para artefatos intermediários (mp3, alignment, cortes)
+        self.work_dir = os.path.join(tempfile.gettempdir(), "ancopy", "work")
+        os.makedirs(self.work_dir, exist_ok=True)
+
+        # fila de log: várias mensagens em rajada animavam em paralelo e
+        # embaralhavam caracteres no textbox. Serializa as animações.
+        self._log_queue = []
+        self._log_animating = False
+
+        self._build_layout()
+
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind('<<Drop>>', self._handle_drop)
+
+        if config.CHECK_UPDATES:
+            self.after(1000, self._check_update_async)
+        self.log("Sistema pronto. Arraste um arquivo...")
+
+    # ------------------------------------------------------------------ layout
+    def _build_layout(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # topo: seletor de arquivo + engrenagem
+        self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+
+        self.btn_select = ctk.CTkButton(
+            self.top_frame, text="Carregar .SRT / .ASS / .MKV",
+            command=self._select_file,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN, width=90, height=32,
+        )
+        self.btn_select.pack(side="left")
+
+        self.btn_settings = ctk.CTkButton(
+            self.top_frame, text="⚙️", width=35,
+            command=self._open_settings,
+            fg_color="transparent", text_color="white",
+            hover_color=style.HOVER_SUBTLE, font=style.FONT_ICON,
+        )
+        self.btn_settings.pack(side="right")
+
+        # Seletor de modelo — movido pro topo pra abrir espaço no rodapé
+        self.btn_model_selector = ctk.CTkButton(
+            self.top_frame, text=f"{self.selected_model}", command=self._toggle_model,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL, width=140, height=32,
+        )
+        self.btn_model_selector.pack(side="right", padx=(0, 8))
+
+        # log central
+        self.log_box = ctk.CTkTextbox(
+            self, font=style.FONT_LOG,
+            fg_color=style.BG_DARK, text_color=style.LOG_TEXT,
+        )
+        self.log_box.grid(row=1, column=0, padx=20, pady=(0, 70), sticky="nsew")
+        self.log_box.configure(state="disabled")
+
+        self.btn_copy = ctk.CTkButton(
+            self, text="📋", command=self._copy_to_clipboard,
+            width=35, height=35,
+            fg_color=style.SURFACE, text_color="white",
+            hover_color=style.HOVER_SUBTLE, font=style.FONT_ICON,
+        )
+        self.btn_copy.place_forget()
+
+        # rodapé (5 ações): resumo | short | narração | plano | limpar
+        self.btn_ai = ctk.CTkButton(
+            self, text="✨ Resumo", command=self._generate_summary,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=95, height=32, state="disabled",
+        )
+        self.btn_ai.place(relx=0.03, rely=0.96, anchor="sw")
+
+        self.btn_short = ctk.CTkButton(
+            self, text="📝 Short", command=self._generate_short,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=90, height=32, state="disabled",
+        )
+        self.btn_short.place(relx=0.19, rely=0.96, anchor="sw")
+
+        self.btn_tts = ctk.CTkButton(
+            self, text="🎙️ Narração", command=self._generate_tts,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=115, height=32, state="disabled",
+        )
+        self.btn_tts.place(relx=0.34, rely=0.96, anchor="sw")
+
+        self.btn_plano = ctk.CTkButton(
+            self, text="🎬 Plano", command=self._generate_plan,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=95, height=32, state="disabled",
+        )
+        self.btn_plano.place(relx=0.54, rely=0.96, anchor="sw")
+
+        self.btn_clear = ctk.CTkButton(
+            self, text="Limpar", command=self._clear_data,
+            fg_color=style.BTN_DANGER_FG, hover_color=style.BTN_DANGER_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=75, height=32, state="disabled",
+        )
+        self.btn_clear.place(relx=0.97, rely=0.96, anchor="se")
+
+    # --------------------------------------------------------------- settings
+    def _open_settings(self):
+        settings_modal.open_settings(self, self.cfg, self._on_settings_saved)
+
+    def _on_settings_saved(self, new_cfg):
+        self.cfg = new_cfg
+        self.log("Configurações salvas.")
+
+    # ----------------------------------------------------------------- update
+    def _check_update_async(self):
+        def _run():
+            updater.check_async(self._on_update_available)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_update_available(self, link, versao):
+        self.after(0, lambda: update_modal.show(self, link, versao, self._on_update_error))
+
+    def _on_update_error(self, msg):
+        self.after(0, self.log, f"[ERRO] Falha ao baixar atualização: {msg}")
+
+    # ---------------------------------------------------------------- modelos
+    def _toggle_model(self):
+        self.selected_model = (
+            config.DEFAULT_FALLBACK_MODEL
+            if self.selected_model == config.DEFAULT_MODEL
+            else config.DEFAULT_MODEL
+        )
+        self.cfg["selected_model"] = self.selected_model
+        config.save(self.cfg)
+        self.btn_model_selector.configure(text=f"{self.selected_model}")
+        self.log(f"Modelo alterado para: {self.selected_model}")
+
+    # -------------------------------------------------------- entrada de arquivo
+    def _handle_drop(self, event):
+        file_path = event.data
+        if file_path.startswith('{') and file_path.endswith('}'):
+            file_path = file_path[1:-1]
+        lower = file_path.lower()
+        if lower.endswith(('.srt', '.ass')):
+            self._clear_data()
+            self.log(f"Arquivo recebido: {os.path.basename(file_path)}")
+            threading.Thread(target=self._process_file, args=(file_path,), daemon=True).start()
+        elif lower.endswith('.mkv'):
+            self._clear_data()
+            self.log(f"Arquivo recebido: {os.path.basename(file_path)}")
+            threading.Thread(target=self._process_mkv, args=(file_path,), daemon=True).start()
+        else:
+            self.log("[ERRO] Formato não suportado. Arraste .srt, .ass ou .mkv")
+
+    def _select_file(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[
+                ("Todos suportados", "*.srt *.ass *.mkv"),
+                ("Legendas", "*.srt *.ass"),
+                ("Vídeo MKV", "*.mkv"),
+            ],
+        )
+        if file_path:
+            self._clear_data()
+            self.log(f"Arquivo detectado: {os.path.basename(file_path)}")
+            if file_path.lower().endswith('.mkv'):
+                threading.Thread(target=self._process_mkv, args=(file_path,), daemon=True).start()
+            else:
+                threading.Thread(target=self._process_file, args=(file_path,), daemon=True).start()
+
+    def _process_mkv(self, mkv_path):
+        """Lista faixas, deixa o usuário escolher, extrai e cai no fluxo padrão."""
+        self.mkv_path = mkv_path  # guardado para scene detection + cortes
+        try:
+            self.after(0, self.log, "Inspecionando faixas de legenda...")
+            binaries_dir = self.cfg.get("binaries_dir", "")
+            tracks = mkv.list_subtitle_tracks(mkv_path, binaries_dir=binaries_dir)
+            text_tracks = [t for t in tracks if t.is_text]
+
+            if not tracks:
+                self.after(0, self.log, "[ERRO] Este .mkv não tem faixas de legenda.")
+                return
+            if not text_tracks:
+                self.after(
+                    0, self.log,
+                    "[ERRO] Este .mkv só tem legendas de imagem (PGS/VobSub). "
+                    "Ainda não suportado."
+                )
+                return
+
+            if len(text_tracks) == 1:
+                chosen = text_tracks[0]
+                self.after(0, self.log, f"Faixa única: {chosen.label()}")
+            else:
+                # Precisa rodar na thread da UI e bloquear esta thread até escolher
+                pick_result = {"value": None}
+                done = threading.Event()
+
+                def _show_modal():
+                    pick_result["value"] = track_selector.choose_track(self, text_tracks)
+                    done.set()
+
+                self.after(0, _show_modal)
+                done.wait()
+                chosen = pick_result["value"]
+                if chosen is None:
+                    self.after(0, self.log, "Seleção cancelada.")
+                    return
+
+            self.after(
+                0, self.log,
+                f"Extraindo faixa #{chosen.track_id} ({chosen.codec})...",
+            )
+            out_dir = os.path.join(tempfile.gettempdir(), "ancopy")
+            os.makedirs(out_dir, exist_ok=True)
+            base = os.path.splitext(os.path.basename(mkv_path))[0]
+            out_path = os.path.join(out_dir, base + chosen.extension)
+            mkv.extract_track(mkv_path, chosen.track_id, out_path, binaries_dir=binaries_dir)
+
+            self.after(0, self.log, "Legenda extraída com sucesso.")
+            self._process_file(out_path)
+
+        except BinaryNotFound as e:
+            self.after(0, self.log, f"[ERRO] {e}")
+        except Exception as e:
+            self.after(0, self.log, f"[ERRO] Falha ao processar .mkv: {e}")
+
+    def _process_file(self, file_path):
+        time.sleep(0.8)
+        try:
+            self.after(0, self.log, "Limpando transcript base...")
+            result = subtitle.load_subtitle(file_path)
+            self.cues = result.cues
+            self.transcript_text = result.plain_text
+            self.summary_text = ""
+            self.short_script_text = ""
+            self.last_narration = None
+
+            self.after(0, self.log, "Transcript pronto! Clique em ✨ Resumo.")
+            self.after(500, lambda: self.btn_copy.place(
+                in_=self.log_box, relx=0.98, rely=0.03, anchor="ne",
+            ))
+            self.after(500, lambda: self.btn_clear.configure(state="normal"))
+            self.after(500, lambda: self.btn_ai.configure(state="normal"))
+            self.after(500, lambda: self.btn_short.configure(state="disabled"))
+            self.after(500, lambda: self.btn_tts.configure(state="disabled"))
+        except Exception as e:
+            self.after(0, self.log, f"Erro: {str(e)}")
+
+    # ------------------------------------------------------------------ clear
+    def _clear_data(self):
+        self.cues = []
+        self.transcript_text = ""
+        self.summary_text = ""
+        self.short_script_text = ""
+        self.last_narration = None
+        self.mkv_path = ""
+        self.scene_plan = []
+
+        self.btn_copy.place_forget()
+        self.btn_clear.configure(state="disabled")
+        self.btn_ai.configure(state="disabled")
+        self.btn_short.configure(state="disabled")
+        self.btn_tts.configure(state="disabled")
+        self.btn_plano.configure(state="disabled")
+
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state="disabled")
+        self.log("Área de trabalho limpa.")
+
+    # ------------------------------------------------------------- LLM: resumo
+    def _generate_summary(self):
+        if not self.cfg.get("navy_api_key"):
+            self.log("[ERRO] Insira sua API Key da Navy AI nas configurações (⚙️)")
+            return
+        if not self.transcript_text.strip():
+            self.log("[ERRO] Carregue uma legenda primeiro.")
+            return
+
+        # Ao regerar, zera os artefatos a jusante
+        self.summary_text = ""
+        self.short_script_text = ""
+        self.last_narration = None
+
+        self.btn_ai.configure(state="disabled")
+        self.btn_short.configure(state="disabled")
+        self.btn_tts.configure(state="disabled")
+        self.btn_clear.configure(state="disabled")
+        self.loading_label = "Resumindo episódio"
+        self.is_loading = True
+        self._update_loading_animation()
+        threading.Thread(target=self._call_summary, daemon=True).start()
+
+    def _call_summary(self):
+        cache_parts = ["summary", self.selected_model, script.SUMMARY_PROMPT, self.transcript_text]
+        try:
+            # Cache lookup
+            if self.cfg.get("use_cache"):
+                cached = cache.get_llm(cache_parts)
+                if cached:
+                    self.is_loading = False
+                    self.after(0, self._clear_loading_line)
+                    self.after(0, self.log, "🗂️ [cache] Resumo carregado do cache.")
+                    self._write_full_to_log(cached, header="--- RESUMO ---", instant=True)
+                    self.summary_text = cached.strip()
+                    self.after(0, self.log, "Agora clique em 📝 Short pra gerar o roteiro.")
+                    self.after(0, lambda: self.btn_short.configure(state="normal"))
+                    return
+
+            chunks = script.generate_summary_stream(
+                api_key=self.cfg["navy_api_key"],
+                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                model=self.selected_model,
+                transcript=self.transcript_text,
+            )
+            full = self._stream_into_log(chunks, header="--- RESUMO ---")
+
+            # Fallback: stream veio vazio -> tenta non-streaming
+            if not full.strip():
+                self.after(0, self.log, "[AVISO] Stream vazio — tentando non-stream...")
+                full = script.generate_summary(
+                    api_key=self.cfg["navy_api_key"],
+                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    model=self.selected_model,
+                    transcript=self.transcript_text,
+                )
+                if full.strip():
+                    self._write_full_to_log(full, header="--- RESUMO ---")
+
+            if not full.strip():
+                self.after(0, self.log, "[ERRO] LLM devolveu vazio. Tente de novo ou troque o modelo.")
+                return
+
+            self.summary_text = full.strip()
+            if self.cfg.get("use_cache"):
+                cache.set_llm(cache_parts, self.summary_text)
+            self.after(0, self.log, f"✨ Resumo concluído via {self.selected_model}.")
+            self.after(0, self.log, "Agora clique em 📝 Short pra gerar o roteiro.")
+            self.after(0, lambda: self.btn_short.configure(state="normal"))
+        except NavyError as e:
+            self._handle_llm_error(e)
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self.log, f"\n[ERRO IA]: {str(e)}")
+        finally:
+            self.after(0, lambda: self.btn_ai.configure(state="normal"))
+            self.after(0, lambda: self.btn_clear.configure(state="normal"))
+            self.after(0, lambda: self.btn_model_selector.configure(state="normal"))
+
+    # --------------------------------------------------- LLM: roteiro short
+    def _generate_short(self):
+        if not self.cfg.get("navy_api_key"):
+            self.log("[ERRO] Insira sua API Key da Navy AI em ⚙️")
+            return
+        if not self.summary_text.strip():
+            self.log("[ERRO] Gere o resumo primeiro (✨ Resumo).")
+            return
+
+        # Ao regerar, zera narração (a jusante)
+        self.short_script_text = ""
+        self.last_narration = None
+
+        self.btn_ai.configure(state="disabled")
+        self.btn_short.configure(state="disabled")
+        self.btn_tts.configure(state="disabled")
+        self.btn_clear.configure(state="disabled")
+        self.loading_label = "Condensando em roteiro short"
+        self.is_loading = True
+        self._update_loading_animation()
+        threading.Thread(target=self._call_short, daemon=True).start()
+
+    def _call_short(self):
+        cache_parts = ["short", self.selected_model, script.SHORT_SCRIPT_PROMPT, self.summary_text]
+        try:
+            if self.cfg.get("use_cache"):
+                cached = cache.get_llm(cache_parts)
+                if cached:
+                    self.is_loading = False
+                    self.after(0, self._clear_loading_line)
+                    self.after(0, self.log, "🗂️ [cache] Roteiro short carregado do cache.")
+                    self._write_full_to_log(cached, header="--- ROTEIRO SHORT ---", instant=True)
+                    self.short_script_text = cached.strip()
+                    self.after(0, self.log, "Clique em 🎙️ Narração.")
+                    self.after(0, lambda: self.btn_tts.configure(state="normal"))
+                    return
+
+            chunks = script.generate_short_script_stream(
+                api_key=self.cfg["navy_api_key"],
+                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                model=self.selected_model,
+                summary=self.summary_text,
+            )
+            full = self._stream_into_log(chunks, header="--- ROTEIRO SHORT ---")
+
+            if not full.strip():
+                self.after(0, self.log, "[AVISO] Stream vazio — tentando non-stream...")
+                full = script.generate_short_script(
+                    api_key=self.cfg["navy_api_key"],
+                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    model=self.selected_model,
+                    summary=self.summary_text,
+                )
+                if full.strip():
+                    self._write_full_to_log(full, header="--- ROTEIRO SHORT ---")
+
+            if not full.strip():
+                self.after(
+                    0, self.log,
+                    "[ERRO] LLM devolveu vazio. Tente clicar 📝 Short de novo ou troque o modelo."
+                )
+                # NÃO libera o btn_tts — não tem roteiro
+                return
+
+            self.short_script_text = full.strip()
+            if self.cfg.get("use_cache"):
+                cache.set_llm(cache_parts, self.short_script_text)
+            self.after(0, self.log, "📝 Roteiro short pronto. Clique em 🎙️ Narração.")
+            self.after(0, lambda: self.btn_tts.configure(state="normal"))
+        except NavyError as e:
+            self._handle_llm_error(e)
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self.log, f"\n[ERRO IA]: {str(e)}")
+        finally:
+            self.after(0, lambda: self.btn_ai.configure(state="normal"))
+            self.after(0, lambda: self.btn_short.configure(state="normal"))
+            self.after(0, lambda: self.btn_clear.configure(state="normal"))
+
+    # ------------------------------------------------ helpers de streaming IA
+    def _stream_into_log(self, chunks, header: str) -> str:
+        """Consome stream da LLM, escreve no log. Retorna "" se o stream
+        não produziu nenhum chunk — aí o chamador tenta non-streaming.
+        """
+        first = True
+        full = ""
+        for texto_chunk in chunks:
+            if first:
+                self.is_loading = False
+                self.after(0, lambda h=header: self._prepare_log_section(h))
+                first = False
+            full += texto_chunk
+            for char in texto_chunk:
+                self.after(0, self._safe_insert, char)
+                time.sleep(0.01)
+        if first:
+            # Stream vazio — não escreve placeholder, deixa o fallback decidir.
+            return ""
+        self.after(0, lambda: self._safe_insert("\n---\n"))
+        return full
+
+    def _write_full_to_log(self, full: str, header: str, instant: bool = False):
+        """Escreve um texto completo no log. instant=True = sem animação (pra cache)."""
+        self.is_loading = False
+        self.after(0, lambda h=header: self._prepare_log_section(h))
+        if instant:
+            self.after(0, self._safe_insert, full)
+        else:
+            for char in full:
+                self.after(0, self._safe_insert, char)
+                time.sleep(0.01)
+        self.after(0, lambda: self._safe_insert("\n---\n"))
+
+    def _handle_llm_error(self, err):
+        self.is_loading = False
+        msg = str(err)
+        if "429" in msg:
+            self.after(
+                0, self.log,
+                f"\n[AVISO]: Limite do {self.selected_model} atingido! "
+                f"Tente alternar o modelo no botão abaixo. ⏳",
+            )
+        else:
+            self.after(0, self.log, f"\n[ERRO IA]: {msg}")
+
+    # ------------------------------------------------------------------ log
+    def log(self, message):
+        self._log_queue.append(f"\n> {message}")
+        if not self._log_animating:
+            self._log_animating = True
+            self._drain_log_queue()
+
+    def _drain_log_queue(self):
+        if not self._log_queue:
+            self._log_animating = False
+            return
+        text = self._log_queue.pop(0)
+        self._type_animation(text, 0)
+
+    def _type_animation(self, text, index=0):
+        if index < len(text):
+            self.log_box.configure(state="normal")
+            self.log_box.insert("end", text[index])
+            self.log_box.configure(state="disabled")
+            self.log_box.see("end")
+            self.after(15, lambda: self._type_animation(text, index + 1))
+        else:
+            self._drain_log_queue()
+
+    def _safe_insert(self, text):
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", text)
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
+
+    def _update_loading_animation(self):
+        if self.is_loading:
+            self.loading_dots_count = (self.loading_dots_count + 1) % 4
+            dots = "." * self.loading_dots_count
+            self.log_box.configure(state="normal")
+            line_count = int(self.log_box.index("end-1c").split(".")[0])
+            self.log_box.delete(f"{line_count}.0", "end")
+            self.log_box.insert("end", f"\n> {self.loading_label}{dots}")
+            self.log_box.configure(state="disabled")
+            self.log_box.see("end")
+            self.after(300, self._update_loading_animation)
+
+    def _clear_loading_line(self):
+        """Remove a linha atual de loading — útil quando a etapa termina sem stream."""
+        self.log_box.configure(state="normal")
+        line_count = int(self.log_box.index("end-1c").split(".")[0])
+        self.log_box.delete(f"{line_count}.0", "end")
+        self.log_box.configure(state="disabled")
+
+    # --------------------------------------------------------------- TTS
+    def _generate_tts(self):
+        if not self.cfg.get("elevenlabs_api_key"):
+            self.log("[ERRO] Configure a API key do ElevenLabs em ⚙️")
+            return
+        if not self.cfg.get("elevenlabs_voice_id"):
+            self.log("[ERRO] Escolha uma voz do ElevenLabs em ⚙️ (Buscar...)")
+            return
+        if not self.short_script_text.strip():
+            self.log("[ERRO] Gere o roteiro short primeiro (📝 Short).")
+            return
+
+        self.btn_tts.configure(state="disabled")
+        self.btn_ai.configure(state="disabled")
+        self.btn_short.configure(state="disabled")
+        self.btn_clear.configure(state="disabled")
+        self.loading_label = "Gerando narração no ElevenLabs"
+        self.is_loading = True
+        self._update_loading_animation()
+        threading.Thread(target=self._call_tts, daemon=True).start()
+
+    def _call_tts(self):
+        voice_id = self.cfg["elevenlabs_voice_id"]
+        model_id = self.cfg.get("elevenlabs_model_id") or config.DEFAULT_ELEVENLABS_MODEL
+        speed = float(self.cfg.get("tts_speed") or 1.0)
+        silence_cut = bool(self.cfg.get("tts_silence_cut", True))
+        cache_parts = [
+            "tts", "v6-snappy",  # bump quando params de audio_post mudam
+            voice_id, model_id,
+            f"{speed:.3f}", str(silence_cut),
+            self.short_script_text,
+        ]
+
+        try:
+            # Cache lookup — se bater, copia pro work_dir e pula API + pós-processo
+            if self.cfg.get("use_cache"):
+                cached_mp3, cached_align = cache.get_tts(cache_parts)
+                if cached_mp3 and cached_align:
+                    out_mp3 = os.path.join(self.work_dir, "narration.mp3")
+                    out_align = os.path.join(self.work_dir, "narration.alignment.json")
+                    _shutil.copy(cached_mp3, out_mp3)
+                    _shutil.copy(cached_align, out_align)
+                    with open(out_align, "r", encoding="utf-8") as f:
+                        ad = _json.load(f)
+                    align = tts.Alignment(
+                        characters=ad.get("characters", []),
+                        starts=ad.get("character_start_times_seconds", []),
+                        ends=ad.get("character_end_times_seconds", []),
+                    )
+                    self.last_narration = tts.TTSResult(
+                        audio_path=out_mp3, alignment_path=out_align, alignment=align,
+                    )
+                    self.is_loading = False
+                    self.after(0, self._clear_loading_line)
+                    self.after(
+                        0, self.log,
+                        f"🗂️ [cache] Narração carregada ({align.duration:.1f}s)."
+                    )
+                    # Libera o botão de plano quando temos .mkv + cues
+                    if self.mkv_path and self.cues:
+                        self.after(0, lambda: self.btn_plano.configure(state="normal"))
+                        self.after(
+                            0, self.log,
+                            "Agora clique em 🎬 Plano pra montar o plano de cortes."
+                        )
+                    try:
+                        if os.name == "nt":
+                            os.startfile(out_mp3)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    return
+
+            result = tts.synthesize(
+                api_key=self.cfg["elevenlabs_api_key"],
+                voice_id=voice_id,
+                model_id=model_id,
+                text=self.short_script_text,
+                output_dir=self.work_dir,
+            )
+
+            # Pós-processamento: silence cut + speed change + ajuste do alignment
+            if silence_cut or abs(speed - 1.0) > 0.001:
+                try:
+                    new_align, stats = audio_post.postprocess(
+                        audio_path=result.audio_path,
+                        alignment=result.alignment,
+                        speed=speed,
+                        silence_cut=silence_cut,
+                        binaries_dir=self.cfg.get("binaries_dir", ""),
+                    )
+                    # Regrava o alignment.json com tempos ajustados
+                    with open(result.alignment_path, "w", encoding="utf-8") as f:
+                        _json.dump(new_align.to_dict(), f, indent=2, ensure_ascii=False)
+                    result = tts.TTSResult(
+                        audio_path=result.audio_path,
+                        alignment_path=result.alignment_path,
+                        alignment=new_align,
+                    )
+                    self.after(
+                        0, self.log,
+                        f"✂️ Pós-processo: {stats.silences_removed_count} silêncios "
+                        f"(−{stats.silences_removed_seconds:.1f}s), velocidade {stats.speed:.2f}x. "
+                        f"{stats.original_duration:.1f}s → {stats.final_duration:.1f}s"
+                    )
+                except BinaryNotFound as e:
+                    self.after(
+                        0, self.log,
+                        f"[AVISO] ffmpeg não encontrado — pulando pós-processamento. {e}"
+                    )
+                except Exception as e:
+                    self.after(
+                        0, self.log,
+                        f"[AVISO] Pós-processamento falhou: {e}"
+                    )
+
+            # Salva no cache se habilitado — tanto mp3 quanto alignment pós-processados
+            if self.cfg.get("use_cache"):
+                cache.set_tts(cache_parts, result.audio_path, result.alignment_path)
+
+            self.last_narration = result
+            self.is_loading = False
+            dur = result.alignment.duration
+            self.after(0, self._clear_loading_line)
+            self.after(
+                0, self.log,
+                f"✨ Narração pronta ({dur:.1f}s). Salva em: {result.audio_path}",
+            )
+            # Libera o botão de plano se tivermos .mkv original e cues
+            if self.mkv_path and self.cues:
+                self.after(0, lambda: self.btn_plano.configure(state="normal"))
+                self.after(0, self.log, "Agora clique em 🎬 Plano pra montar o plano de cortes.")
+            try:
+                if os.name == "nt":
+                    os.startfile(result.audio_path)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        except tts.TTSError as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"[ERRO TTS]: {e}")
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"[ERRO TTS]: {str(e)}")
+        finally:
+            self.after(0, lambda: self.btn_tts.configure(state="normal"))
+            self.after(0, lambda: self.btn_ai.configure(state="normal"))
+            self.after(0, lambda: self.btn_short.configure(state="normal"))
+            self.after(0, lambda: self.btn_clear.configure(state="normal"))
+
+    # ------------------------------------------------ Plano de cortes (Fase 3a)
+    def _generate_plan(self):
+        if not self.last_narration:
+            self.log("[ERRO] Gere a narração primeiro.")
+            return
+        if not self.cues:
+            self.log("[ERRO] Sem cues do transcript — só funciona depois de extrair legenda.")
+            return
+        if not self.mkv_path or not os.path.isfile(self.mkv_path):
+            self.log("[ERRO] Arquivo .mkv original não encontrado. Plano precisa do vídeo.")
+            return
+        if not self.cfg.get("navy_api_key"):
+            self.log("[ERRO] Configure a Navy API key em ⚙️")
+            return
+
+        self.btn_plano.configure(state="disabled")
+        self.btn_clear.configure(state="disabled")
+        self.loading_label = "Montando plano de cortes"
+        self.is_loading = True
+        self._update_loading_animation()
+        threading.Thread(target=self._call_plan, daemon=True).start()
+
+    def _call_plan(self):
+        try:
+            # 1. Chunk da narração em beats (granular pra short)
+            beats = chunking.chunk_by_time(
+                self.last_narration.alignment,
+                target_seconds=1.8, max_seconds=2.6,
+            )
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"✂️ Narração quebrada em {len(beats)} beats (~2.5s cada).")
+
+            # 2. Scene detection (cacheada)
+            self.after(0, self.log, "🎞️ Detectando mudanças de cena no .mkv (pode levar ~30s na 1ª vez)...")
+            scenes = scene_detect.detect_scenes(
+                self.mkv_path, threshold=0.35,
+                binaries_dir=self.cfg.get("binaries_dir", ""),
+                use_cache=True,
+            )
+            self.after(0, self.log, f"🎞️ {len(scenes)} mudanças de cena detectadas.")
+
+            # 3. Matcher LLM (via non-stream, com cache)
+            cache_parts = [
+                "matcher", "v10-grouping-back",
+                self.selected_model,
+                matcher.MATCHER_PROMPT,
+                self.short_script_text,
+                self.summary_text,
+                str(len(self.cues)),
+                str(len(beats)),
+            ]
+
+            llm_output = None
+            if self.cfg.get("use_cache"):
+                llm_output = cache.get_llm(cache_parts)
+                if llm_output:
+                    self.after(0, self.log, "🗂️ [cache] Plano carregado do cache.")
+
+            if not llm_output:
+                self.after(0, self.log, "🤖 Consultando LLM pra casar beats com cenas...")
+                plan = matcher.match_beats_to_cues(
+                    beats=beats, cues=self.cues,
+                    summary=self.summary_text,
+                    api_key=self.cfg["navy_api_key"],
+                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    model=self.selected_model,
+                    scene_changes=scenes,
+                    pad_before=0.0,
+                    max_backward_snap=3.0, max_forward_snap=0.5,
+                    group_cues_gap=1.5,  # sweet spot: grupos grandes o suficiente pra LLM pegar cenas inteiras, spread distribui dentro
+                    mkv_path=self.mkv_path,
+                    avoid_landscape=True,
+                )
+                # Salva no cache o JSON serializado (simplificado)
+                if self.cfg.get("use_cache"):
+                    # Não guardo cue_id pq cue pode ser grupo (não bate com self.cues).
+                    # video_start/end já traz a info temporal relevante.
+                    serial = _json.dumps([
+                        {"beat_index": m.beat.index,
+                         "video_start": m.video_start, "video_end": m.video_end,
+                         "why": m.why, "snapped": m.snapped}
+                        for m in plan
+                    ])
+                    cache.set_llm(cache_parts, serial)
+            else:
+                # Reconstrói SceneMatch list do cache. Note: guardamos video_start
+                # já snappado; `cue` do cache referencia por timestamp aproximado.
+                try:
+                    items = _json.loads(llm_output)
+                    plan = []
+                    for item in items:
+                        bi = int(item["beat_index"])
+                        b = next((x for x in beats if x.index == bi), None)
+                        if not b:
+                            continue
+                        # Acha cue original mais próxima do video_start cacheado
+                        vs = float(item["video_start"])
+                        closest_cue = min(
+                            self.cues, key=lambda c: abs(c.start - vs),
+                        ) if self.cues else None
+                        plan.append(matcher.SceneMatch(
+                            beat=b, cue=closest_cue,
+                            video_start=vs,
+                            video_end=float(item["video_end"]),
+                            snapped=bool(item.get("snapped")),
+                            why=str(item.get("why") or ""),
+                        ))
+                except Exception as e:
+                    self.after(0, self.log, f"[AVISO] Cache corrompido, refazendo: {e}")
+                    plan = matcher.match_beats_to_cues(
+                        beats=beats, cues=self.cues,
+                        summary=self.summary_text,
+                        api_key=self.cfg["navy_api_key"],
+                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        model=self.selected_model,
+                        scene_changes=scenes,
+                        max_backward_snap=3.0, max_forward_snap=0.5,
+                        mkv_path=self.mkv_path, avoid_landscape=True,
+                    )
+
+            self.scene_plan = plan
+
+            # 4. Log do plano (inserção instantânea — typewriter lento atrasa a UX
+            # e fica visualmente fora de ordem com as mensagens do cut/render)
+            self.after(0, lambda: self._prepare_log_section("--- PLANO DE CORTES ---"))
+            snapped_count = sum(1 for m in plan if m.snapped)
+            total_dur = sum(m.beat.duration for m in plan)
+            summary_line = (
+                f"\n> {len(plan)} clipes · {total_dur:.1f}s total · "
+                f"{snapped_count} com snap de cena\n"
+            )
+            self.after(0, self._safe_insert, summary_line)
+            for m in plan:
+                self.after(0, self._safe_insert, f"> {m.label()}\n")
+
+            # 5. Fase 3b: cortar cada beat em um mp4 silencioso
+            clips_dir = os.path.join(self.work_dir, "clips")
+            # Limpa clipes antigos pra não misturar runs
+            if os.path.isdir(clips_dir):
+                _shutil.rmtree(clips_dir, ignore_errors=True)
+
+            self.after(0, self.log, f"🎬 Cortando {len(plan)} clipes do .mkv...")
+            clip_paths = video.cut_clips(
+                mkv_path=self.mkv_path,
+                plan=plan,
+                out_dir=clips_dir,
+                binaries_dir=self.cfg.get("binaries_dir", ""),
+            )
+
+            # 6. Captions word-by-word (fonte maior, outline mais grosso)
+            captions_path = os.path.join(self.work_dir, "captions.ass")
+            captions.generate_ass(
+                alignment=self.last_narration.alignment,
+                output_path=captions_path,
+                resolution=(1080, 1920),
+                fontsize=110, outline=7,
+                vertical_pct=0.78,
+            )
+            self.after(0, self.log, "📝 Captions word-by-word geradas.")
+
+            # 7. Fase 3c: render final 9:16 + blur + burn captions + mux narração
+            self.after(0, self.log, "🎞️ Montando short final (9:16 + blur + captions)...")
+            final_path = os.path.join(self.work_dir, "short_final.mp4")
+            video.render_short(
+                clip_paths=clip_paths,
+                narration_path=self.last_narration.audio_path,
+                captions_path=captions_path,
+                output_path=final_path,
+                resolution=(1080, 1920),
+                fg_scale=1.50,   # 50% maior que a tela; corta ~17% de cada lateral
+                binaries_dir=self.cfg.get("binaries_dir", ""),
+            )
+
+            size_mb = os.path.getsize(final_path) / (1024 * 1024)
+            self.after(
+                0, self.log,
+                f"✅ Short pronto! {size_mb:.1f}MB — {final_path}",
+            )
+            try:
+                if os.name == "nt":
+                    os.startfile(final_path)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"[ERRO] Plano falhou: {e}")
+        finally:
+            self.after(0, lambda: self.btn_plano.configure(state="normal"))
+            self.after(0, lambda: self.btn_clear.configure(state="normal"))
+
+    def _prepare_log_section(self, header: str):
+        self.log_box.configure(state="normal")
+        line_count = int(self.log_box.index("end-1c").split(".")[0])
+        self.log_box.delete(f"{line_count}.0", "end")
+        self.log_box.insert("end", f"\n\n{header}\n")
+        self.log_box.configure(state="disabled")
+
+    def _copy_to_clipboard(self):
+        """Copia o artefato mais avançado disponível: short > summary > transcript."""
+        if self.short_script_text:
+            label, text = "Roteiro Short", self.short_script_text
+        elif self.summary_text:
+            label, text = "Resumo", self.summary_text
+        elif self.transcript_text:
+            label, text = "Transcript", self.transcript_text
+        else:
+            return
+
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+        original_color = self.btn_copy.cget("fg_color")
+        self.btn_copy.configure(fg_color=style.BTN_SUCCESS_FG)
+        self.log(f"[{label}] copiado para a área de transferência!")
+        self.after(1500, lambda: self.btn_copy.configure(fg_color=original_color))

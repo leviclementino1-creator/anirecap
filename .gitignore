@@ -1,0 +1,42 @@
+# ───────── Segredos (NUNCA comitar) ─────────
+config.json
+
+# ───────── Python ─────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ───────── Claude Code (project settings pessoais) ─────────
+.claude/
+
+# ───────── IDE / editor ─────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ───────── SO ─────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ───────── Build PyInstaller ─────────
+build/
+dist/
+*.manifest
+
+# ───────── Artefatos de trabalho (ficam em %TEMP% mas suspenders) ─────────
+work/
+clips/
+cache/
+*.raw.mp3
+*.trim.mp3
+*.speed.mp3
+*.log

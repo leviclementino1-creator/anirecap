@@ -1,0 +1,64 @@
+"""Persistência de configuração do app em config.json (ao lado do executável).
+
+Modelo de chaves:
+- navy_api_key, navy_base_url                  → provider LLM (Gemini via Navy)
+- elevenlabs_api_key, elevenlabs_voice_id, elevenlabs_model_id → TTS (Fase 2+)
+- selected_model                               → último modelo usado no botão
+"""
+import json
+import os
+
+from utils.paths import application_path
+
+VERSAO_ATUAL = "1.2.4"
+URL_VERSAO = "https://ancopyattapi.vercel.app/versao.json"
+
+# Desligado durante o desenvolvimento da v2. Quando for publicar a próxima
+# versão no endpoint da Vercel, religa isto e suba VERSAO_ATUAL.
+CHECK_UPDATES = False
+
+DEFAULT_NAVY_BASE_URL = "https://api.navy/v1"
+DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
+
+CONFIG_FILE = os.path.join(application_path(), 'config.json')
+
+_DEFAULTS = {
+    "navy_api_key": "",
+    "navy_base_url": DEFAULT_NAVY_BASE_URL,
+    "elevenlabs_api_key": "",
+    "elevenlabs_voice_id": "",
+    "elevenlabs_model_id": DEFAULT_ELEVENLABS_MODEL,
+    "selected_model": DEFAULT_MODEL,
+    "binaries_dir": "",  # fallback para ffmpeg/mkvmerge/mkvextract
+    # Pós-processamento do TTS
+    "tts_speed": 1.0,         # fator atempo; 1.0 = normal, 1.2 = mais rápido
+    "tts_silence_cut": True,  # cortar pausas longas
+    # Cache em disco (economiza tokens em testes repetidos)
+    "use_cache": False,
+}
+
+
+def load() -> dict:
+    data = dict(_DEFAULTS)
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for k, v in saved.items():
+                    if k in _DEFAULTS:
+                        data[k] = v
+        except Exception:
+            pass
+    return data
+
+
+def save(cfg: dict) -> None:
+    merged = dict(_DEFAULTS)
+    for k, v in cfg.items():
+        if k in _DEFAULTS:
+            merged[k] = v
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(merged, f, indent=2, ensure_ascii=False)
