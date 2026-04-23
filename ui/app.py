@@ -440,6 +440,30 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         threading.Thread(target=self._call_short, daemon=True).start()
 
     def _call_short(self):
+        # Override manual: se existir override_short_script.txt na pasta do app,
+        # usa o conteúdo direto (ignora LLM). Garante resultados determinísticos
+        # e evita variações não-desejadas. Remove o arquivo pra voltar ao fluxo LLM.
+        from utils.paths import application_path
+        override = os.path.join(application_path(), "override_short_script.txt")
+        if os.path.isfile(override):
+            try:
+                with open(override, "r", encoding="utf-8") as f:
+                    text = f.read().strip()
+                if text:
+                    self.is_loading = False
+                    self.after(0, self._clear_loading_line)
+                    self.after(0, self.log, f"📌 Usando short_script do override ({override})")
+                    self._write_full_to_log(text, header="--- ROTEIRO SHORT (OVERRIDE) ---", instant=True)
+                    self.short_script_text = text
+                    self.after(0, self.log, "📝 Override carregado. Clique em 🎙️ Narração.")
+                    self.after(0, lambda: self.btn_tts.configure(state="normal"))
+                    self.after(0, lambda: self.btn_ai.configure(state="normal"))
+                    self.after(0, lambda: self.btn_short.configure(state="normal"))
+                    self.after(0, lambda: self.btn_clear.configure(state="normal"))
+                    return
+            except Exception as e:
+                self.after(0, self.log, f"[AVISO] Falha lendo override: {e}, usando LLM normal.")
+
         cache_parts = ["short", self.selected_model, script.SHORT_SCRIPT_PROMPT, self.summary_text]
         try:
             if self.cfg.get("use_cache"):
