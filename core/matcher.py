@@ -324,20 +324,27 @@ def match_beats_to_cues(
     return results
 
 
-_PT_EN_FOR_QUOTES = {
+# Palavras PT com tradução EN RARA/ESPECÍFICA — se a narração tem uma
+# dessas, fuzzy pode ancorar com segurança. "ué", "como assim", "irmãzinha"
+# foram REMOVIDAS porque suas traduções ("what", "huh", "sister") são
+# comuns demais e geram falsos positivos.
+_PT_EN_HIGH_VALUE = {
     "sujas": ["dirty"], "sujo": ["dirty"],
-    "criança": ["kid", "child"], "crianças": ["kid", "child"],
-    "abrace": ["hug", "arm around"], "abraço": ["hug", "arm around"],
-    "interesse": ["interest"], "gamada": ["interest", "crush"],
-    "namorado": ["boyfriend", "candidate"], "candidato": ["candidate"],
-    "irmãzinha": ["little sis", "sister"], "vizinha": ["neighbor"],
-    "dança": ["dance"], "dancinha": ["dance"], "dancinhas": ["dance"],
-    "fotos": ["photo"], "caretas": ["funny face", "face"],
-    "revezar": ["rotate", "take turns", "hour each"],
-    "hotel": ["hotel"], "cinema": ["movie", "cinema"],
-    "fliperama": ["arcade"], "glittermon": ["glittermon"],
+    "abrace": ["hug", "arm around"],
+    "abraço": ["hug", "arm around"],
+    "abraçar": ["hug", "arm around"],
+    "glittermon": ["glittermon"],
     "fanbook": ["fan book", "fanbook"],
-    "como assim": ["what", "huh"], "ué": ["what", "huh"],
+    "animate": ["animate"],
+    "fliperama": ["arcade"],
+    "hotel": ["hotel"],
+    "gamada": ["crush", "into him", "in love"],
+    "dançando": ["dancing"],
+    "dancinha": ["dance", "dancing"],
+    "dancinhas": ["dance", "dancing"],
+    "miss luna": ["miss luna"],
+    "standee": ["standee", "acrylic"],
+    "caretas": ["funny face", "silly face"],
 }
 
 
@@ -346,30 +353,35 @@ def _fuzzy_refine_quoted_beats(
     all_cues: List[Cue],
     min_distance_to_override: float = 10.0,
 ) -> int:
-    """Fuzzy NARROW: só pra beats com aspas na narração. Extrai keywords PT,
-    traduz e busca cues com mais keywords-hit que a atual. Sobrescreve só
-    quando há melhora SIGNIFICATIVA (>=2 keywords a mais) E distância > 10s
-    (pra não mexer em matches já próximos).
+    """Fuzzy NARROW e ESPECÍFICO.
 
-    Versão conservadora do fuzzy — só ataca casos claros como
-    'nada de coisas sujas' → cue com 'dirty'.
+    Condições pra disparar:
+    1. Beat tem aspas (citação literal na narração)
+    2. Beat contém palavra PT de alto valor (_PT_EN_HIGH_VALUE) — palavras
+       raras com tradução específica. Palavras genéricas como 'ué' ou
+       'irmãzinha' não disparam (geram falsos positivos).
+    3. Encontra uma cue com PELO MENOS 1 keyword-hit a mais que a atual.
+    4. Distância temporal > min_distance_to_override.
+
+    Só então sobrescreve.
     """
-    import re
     moved = 0
 
     for m in results:
         text = m.beat.text
-        # Só processa se tem aspas na narração
         if '"' not in text:
             continue
 
         text_lower = text.lower()
+
+        # Extrai APENAS keywords de alto valor
         en_keywords = set()
-        for pt_word, en_list in _PT_EN_FOR_QUOTES.items():
+        for pt_word, en_list in _PT_EN_HIGH_VALUE.items():
             if pt_word in text_lower:
                 en_keywords.update(en_list)
-        if len(en_keywords) < 1:
-            continue
+
+        if not en_keywords:
+            continue  # sem palavra-chave forte, skip fuzzy
 
         # Score cue atual
         current_score = 0
