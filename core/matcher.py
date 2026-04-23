@@ -34,19 +34,24 @@ BEATS DA NARRAÇÃO (pra cada um, escolha UMA cena acima):
 REGRAS IMPORTANTES:
 1. VOCÊ DEVE RETORNAR UM MATCH PRA CADA UM DOS {n_beats} BEATS. Não pule nenhum.
 2. Pra cada beat, escolha o `cue_id` (número da cena) que melhor representa
-   visualmente o que está sendo narrado naquele beat.
-3. Pode repetir cenas se beats consecutivos falam da mesma coisa.
-4. Pode não-linear: a narração reorganiza a história, cenas podem aparecer
-   fora de ordem cronológica — isso é esperado.
-5. Se o beat é um comentário do narrador que não tem cena específica, escolha
-   a cena que está sendo comentada ali perto na narrativa — NUNCA deixe sem match.
-6. EVITE cenas de estabelecimento, paisagem, céu, transições vazias ou
-   qualquer cena sem personagens visíveis. Prefira SEMPRE cenas com diálogo
-   ativo ou personagens em foco. Se o short_script menciona um personagem,
-   escolha a cena ONDE ele aparece, não a cena que só prepara o cenário.
-7. O campo `why` é curto (3-7 palavras). NÃO USE aspas duplas " dentro do
-   valor — se precisar citar algo, use aspas simples ' ou parênteses. NÃO use
-   quebras de linha dentro do valor.
+   VISUALMENTE o que está sendo narrado naquele beat.
+3. REGRA DE OURO — narração → imagem:
+   - Se o beat é um HOOK/IMPACTO ("esse otaku saiu com DUAS garotas"),
+     escolha a cena que MOSTRA visualmente esse impacto (as duas garotas
+     com ele em quadro), NÃO a cena onde se fala sobre isso em palavras.
+   - Se o beat é SETUP ("ele recebeu dois convites"), aí sim escolha a cena
+     que MOSTRA o setup (ele olhando os convites, confuso).
+   - Pense: "se eu fosse editor pausando no meio dessa narração, que FRAME
+     o espectador precisa estar vendo pra história fazer sentido?"
+4. Pode repetir cenas se beats consecutivos falam da mesma coisa.
+5. Pode ser não-linear: a narração reorganiza a história — cenas podem
+   aparecer fora da ordem cronológica do episódio.
+6. EVITE cenas de estabelecimento, paisagem, céu, transições vazias.
+   Prefira SEMPRE cenas com PERSONAGENS VISÍVEIS em quadro.
+7. Se o beat narra um momento dramático, PRIORIZE a cena de reação/ação
+   VISUAL daquele momento sobre a cena onde se menciona ele em diálogo.
+8. O campo `why` é curto (3-7 palavras). NÃO USE aspas duplas " dentro do
+   valor — use aspas simples ' ou parênteses. NÃO use quebras de linha.
 
 SAÍDA: APENAS JSON válido. Começa direto com `{{`. Inclui OBRIGATORIAMENTE
 uma entrada "matches" com EXATAMENTE {n_beats} itens (beats de 1 a {n_beats}):
@@ -224,7 +229,9 @@ def match_beats_to_cues(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         timeout=240.0,
-        temperature=0,  # determinismo: mesmo input sempre dá mesmo output
+        # Sem temperature=0: a LLM precisa ser criativa pra escolher entre
+        # "cena literal onde se menciona o evento" vs "cena visualmente
+        # impactante do evento". Determinismo aqui matava criatividade.
     )
 
     body = _extract_json_block(raw)
