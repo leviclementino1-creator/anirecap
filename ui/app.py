@@ -790,6 +790,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _call_plan(self):
         try:
+            from utils.paths import application_path as _app_path
+            app_root = _app_path()
+
             # 1. Chunk da narração em beats (granular pra short)
             beats = chunking.chunk_by_time(
                 self.last_narration.alignment,
@@ -798,6 +801,39 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.is_loading = False
             self.after(0, self._clear_loading_line)
             self.after(0, self.log, f"✂️ Narração quebrada em {len(beats)} beats (~2.5s cada).")
+
+            # OVERRIDE DE PLANO: se existir override_plan.json na raiz com N entradas
+            # casando com beats atuais, usa ele direto e pula matcher+scene_detect+face.
+            # Formato: [{"video_start": float, "why": str opcional, "snapped": bool opcional}, ...]
+            override_plan_path = os.path.join(app_root, "override_plan.json")
+            if os.path.isfile(override_plan_path):
+                try:
+                    with open(override_plan_path, "r", encoding="utf-8") as f:
+                        override_items = _json.load(f)
+                    if not isinstance(override_items, list):
+                        raise ValueError("override_plan.json não é uma lista")
+                    if len(override_items) != len(beats):
+                        self.after(
+                            0, self.log,
+                            f"[AVISO] override_plan.json tem {len(override_items)} items "
+                            f"mas a narração gerou {len(beats)} beats — ignorando override."
+                        )
+                    else:
+                        self.after(0, self.log, f"📌 Usando plano do override ({override_plan_path})")
+                        plan = []
+                        for b, item in zip(beats, override_items):
+                            vs = float(item["video_start"])
+                            plan.append(matcher.SceneMatch(
+                                beat=b, cue=None,
+                                video_start=vs, video_end=vs + b.duration,
+                                snapped=bool(item.get("snapped", False)),
+                                why=str(item.get("why", "[override]")),
+                            ))
+                        self.scene_plan = plan
+                        self._finish_plan_and_render(plan)
+                        return
+                except Exception as e:
+                    self.after(0, self.log, f"[AVISO] Falha lendo override_plan.json: {e}")
 
             # 2. Scene detection (cacheada)
             self.after(0, self.log, "🎞️ Detectando mudanças de cena no .mkv (pode levar ~30s na 1ª vez)...")
@@ -889,8 +925,48 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
             self.scene_plan = plan
 
-            # 4. Log do plano (inserção instantânea — typewriter lento atrasa a UX
-            # e fica visualmente fora de ordem com as mensagens do cut/render)
+            # Auto-save: permite user fixar esse plano copiando o arquivo pra
+            # override_plan.json na raiz do app.
+            try:
+                last_plan_path = os.path.join(self.work_dir, "last_plan.json")
+                snapshot = [
+                    {
+                        "beat_index": m.beat.index,
+                        "beat_text": m.beat.text,
+                        "video_start": round(m.video_start, 3),
+                        "duration": round(m.beat.duration, 3),
+                        "snapped": m.snapped,
+                        "why": m.why,
+                    }
+                    for m in plan
+                ]
+                with open(last_plan_path, "w", encoding="utf-8") as f:
+                    _json.dump(snapshot, f, ensure_ascii=False, indent=2)
+                self.after(
+                    0, self.log,
+                    f"💾 Snapshot do plano salvo em {last_plan_path} — "
+                    f"copie pra override_plan.json na raiz do app pra travar esse plano."
+                )
+            except Exception as e:
+                self.after(0, self.log, f"[AVISO] Não consegui salvar snapshot: {e}")
+
+            self._finish_plan_and_render(plan)
+            return
+
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"[ERRO] Plano falhou: {e}")
+        finally:
+            self.after(0, lambda: self.btn_plano.configure(state="normal"))
+            self.after(0, lambda: self.btn_clear.configure(state="normal"))
+
+    def _finish_plan_and_render(self, plan):
+        """Parte final do pipeline: log do plano + cut + captions + render.
+        Extraído de _call_plan pra poder ser chamado do caminho override também.
+        """
+        try:
+            # Log do plano (inserção instantânea)
             self.after(0, lambda: self._prepare_log_section("--- PLANO DE CORTES ---"))
             snapped_count = sum(1 for m in plan if m.snapped)
             total_dur = sum(m.beat.duration for m in plan)
@@ -902,7 +978,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             for m in plan:
                 self.after(0, self._safe_insert, f"> {m.label()}\n")
 
-            # 5. Fase 3b: cortar cada beat em um mp4 silencioso
+            # Fase 3b: cortar cada beat em um mp4 silencioso
             clips_dir = os.path.join(self.work_dir, "clips")
             # Limpa clipes antigos pra não misturar runs
             if os.path.isdir(clips_dir):
