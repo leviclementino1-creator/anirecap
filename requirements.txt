@@ -2,3 +2,4 @@ customtkinter
 tkinterdnd2
 requests
 opencv-python
+faster-whisper

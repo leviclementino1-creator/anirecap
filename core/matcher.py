@@ -8,13 +8,19 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from core.chunking import NarrationBeat
 from core.cue import Cue
 from core.face_detect import FaceDetector
 from core.scene_detect import snap_to_scene
 from providers import navy
+
+
+# Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
+# Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
+# Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
+MATCHER_PROMPT_VERSION = "matcher-v5-visual-symbols-2025-04-23"
 
 
 MATCHER_PROMPT = """\
@@ -25,16 +31,53 @@ original aquela cena está acontecendo.
 CONTEXTO (resumo do que aconteceu):
 {summary}
 
-CENAS DO EPISÓDIO (grupos numerados com timestamps e diálogo representativo):
+CENAS DO EPISÓDIO (grupos numerados com timestamps e diálogo OU descrição visual):
 {cues_table}
+
+NOTA SOBRE CUES `[VISUAL]`:
+Linhas com prefixo `[VISUAL]` são descrições narradas do que APARECE NA TELA
+(audio description, feita pra acessibilidade). Linhas sem prefixo são falas
+de personagem. AMBAS são cue_ids válidos que você pode escolher.
+
+QUANDO PREFERIR CUE `[VISUAL]`:
+- Beat descreve AÇÃO FÍSICA que acontece na tela (ex: "Agathe solta fogo",
+  "dragão ruge", "Coco corre atrás", "paredes viram brancas", "ela cai").
+- Beat descreve REAÇÃO FACIAL/EMOÇÃO sem diálogo (ex: "Coco arregala os
+  olhos", "Agathe olha com raiva").
+- O beat menciona um evento CUJA FALA correspondente não existe ou está
+  longe do momento visual (ex: narração fala de fogo mas o diálogo mais
+  próximo com "fogo" é 10s depois, quando Coco PERGUNTA sobre o feitiço —
+  prefira a cue `[VISUAL]` que diz "uma grande chama surge" no momento real).
+
+QUANDO PREFERIR CUE DE DIÁLOGO (sem prefixo):
+- Beat cita uma FALA LITERAL ("ele disse X", "ela gritou Y").
+- Beat descreve CONVERSA, EXPLICAÇÃO, REVELAÇÃO verbal.
+- Beat é meta-narrativo sobre o que um personagem PENSA/DIZ.
+
+EXEMPLO CONCRETO:
+- Beat: "Agathe tenta distrair o dragão com feitiço de fogo"
+- Na tabela: `[45] 980s | [VISUAL] uma grande chama surge` + `[47] 991s | Usei o emblema do fogo`
+- Escolha CUE 45 (VISUAL) — é a cena do fogo realmente acontecendo.
+- Escolher 47 mostraria a Coco perguntando DEPOIS, sem ver o fogo no quadro.
 
 BEATS DA NARRAÇÃO (pra cada um, escolha UMA cena acima):
 {beats_table}
 
 REGRAS IMPORTANTES:
 1. VOCÊ DEVE RETORNAR UM MATCH PRA CADA UM DOS {n_beats} BEATS. Não pule nenhum.
-2. Pra cada beat, escolha o `cue_id` (número da cena) que melhor representa
-   VISUALMENTE o que está sendo narrado naquele beat.
+
+2. SOBRE O `cue_id` (LEIA COM ATENÇÃO — ERRO COMUM AQUI):
+   Cada linha da tabela começa com `CUE=N` (onde N é um número inteiro
+   pequeno, de 1 até o total de cenas). ESSE N é o `cue_id` que você deve
+   retornar. NÃO retorne o timestamp (mm:ss) ou qualquer outro número.
+   EXEMPLO: Se a tabela tem:
+     CUE=109  | 18:53.88-19:19.45 | algum texto aqui
+   O `cue_id` correto é `109`, NÃO `1133`, NÃO `18`, NÃO `1853`.
+   Se você retornar um número maior que o total de cenas, seu match vai
+   ser rejeitado.
+
+3. Pra cada beat, escolha o `cue_id` que melhor representa VISUALMENTE o
+   que está sendo narrado naquele beat.
    REQUISITO: as cues têm textos específicos; leia-os e escolha a cue cujo
    conteúdo mais se aproxima do que o beat narra. Não escolha por proximidade
    temporal, escolha por CORRESPONDÊNCIA SEMÂNTICA.
@@ -59,8 +102,64 @@ REGRAS IMPORTANTES:
    Prefira SEMPRE cenas com PERSONAGENS VISÍVEIS em quadro.
 7. Se o beat narra um momento dramático, PRIORIZE a cena de reação/ação
    VISUAL daquele momento sobre a cena onde se menciona ele em diálogo.
-8. O campo `why` é curto (3-7 palavras). NÃO USE aspas duplas " dentro do
-   valor — use aspas simples ' ou parênteses. NÃO use quebras de linha.
+8. COLD OPEN / TEASER — REGRA ABSOLUTA:
+   Animes abrem com um COLD OPEN/TEASER (primeiros 1-5 minutos antes da
+   música de abertura). Ele costuma MOSTRAR FRAGMENTOS e REPETIR FALAS do
+   clímax do episódio pra criar expectativa. A MESMA fala aparece duas
+   vezes: no teaser (timestamp baixo) e no clímax real (timestamp alto).
+   REGRAS OBRIGATÓRIAS:
+   (a) Para os PRIMEIROS 1-2 beats da narração (que costumam ser o HOOK
+       tipo "essa garota foi acusada de X"), JAMAIS escolha cue com
+       timestamp < 300s. Se o match "perfeito" está em 5s, IGNORE-O e
+       procure a mesma fala/cena em timestamp >600s. A primeira vez é
+       teaser, a segunda vez é o clímax real.
+   (b) Em geral, se uma fala aparece duas vezes (teaser + clímax), SEMPRE
+       escolha a TARDIA (maior timestamp). A regra vale pra QUALQUER beat,
+       não só o hook.
+   (c) Beats de SETUP (meio da narração) podem usar cues pré-OP se forem
+       cenas legítimas (aula, apresentação de personagem, treino). Não
+       confunda setup legítimo (ex: "Coco tentou um feitiço" em 73s) com
+       flash de teaser (ex: "Agathe gritou sobre a mãe" em 5s — teaser
+       porque clímax real é em 1145s).
+   (d) Exemplo CONCRETO: beat 01 "essa garota foi acusada de petrificar a
+       mãe" casa com cue em 5s (teaser) e cue em 1145s (clímax). ESCOLHA
+       1145s OBRIGATORIAMENTE. Escolher 5s é ERRO CRÍTICO.
+9. REGRA DE SÍMBOLO VISUAL — IMPORTANTE PRA QUALIDADE EDITORIAL:
+   Quando o beat menciona um OBJETO ICÔNICO ou ELEMENTO VISUAL FORTE,
+   PREFIRA cue `[VISUAL]` que MOSTRA esse objeto/elemento em quadro,
+   em vez de cue de DIÁLOGO onde alguém apenas FALA sobre ele.
+
+   OBJETOS ICÔNICOS comuns: livro, varinha, espada, machado, arma, bússola,
+   chapéu, máscara, espelho, foto, carta, mapa, relíquia, anel, medalhão,
+   símbolo mágico, pentagrama, runa, tatuagem, cicatriz, fogo, chama,
+   relâmpago, água, sangue, fumaça, portal, cristal, espada, etc.
+   ELEMENTOS VISUAIS FORTES: explosão, queda, voo, beijo, abraço, lágrima,
+   sorriso, olhar, transformação, queda de objetos, derramamento.
+
+   EDITORES DE SHORT FAZEM ISSO INSTINTIVAMENTE: imagem evocativa do
+   objeto > cabeça falando sobre ele. Mostra > conta.
+
+   Atenção: o objeto na cue [VISUAL] não precisa ser EXATAMENTE o mesmo
+   objeto literal mencionado no beat — basta ser um objeto da MESMA
+   CATEGORIA evocativa.
+   - Beat: "o feiticeiro deu o livro proibido"
+     CUE=72 | 12:55 | Coco diz: "Eu vi quem me deu o livro!"
+     CUE=1  | 00:00 | [VISUAL] Um livro se abre
+     ESCOLHA: CUE=1. O livro do CUE=1 não é literalmente o "livro proibido"
+     (é o livro de magia da aula), MAS visualmente simboliza "o livro" que
+     o beat narra. É 1000× mais impactante que cabeça falando.
+   - Beat: "Agathe solta uma chama gigante"
+     CUE=93 | 16:31 | Coco diz: "Você usou o emblema do fogo?"
+     CUE=10 | 16:20 | [VISUAL] Uma grande chama irrompe
+     ESCOLHA: CUE=10. A chama em quadro > Coco perguntando depois.
+
+   Quando NÃO aplicar essa regra:
+   - Beat é meta-narrativo ("essa garota foi acusada de X") sem objeto.
+   - Beat é puramente conversacional ("ele disse que ela é traidora").
+   - Beat de revelação/diálogo verbal sem componente visual forte.
+
+10. O campo `why` é curto (3-7 palavras). NÃO USE aspas duplas " dentro do
+    valor — use aspas simples ' ou parênteses. NÃO use quebras de linha.
 
 SAÍDA: APENAS JSON válido. Começa direto com `{{`. Inclui OBRIGATORIAMENTE
 uma entrada "matches" com EXATAMENTE {n_beats} itens (beats de 1 a {n_beats}):
@@ -125,14 +224,66 @@ def group_cues(cues: List[Cue], max_gap: float = 2.0) -> List[Cue]:
     return merged
 
 
-def _cues_table(cues: List[Cue], max_chars_each: int = 120) -> str:
-    """Renderiza as cenas agrupadas como tabela pro prompt."""
+def _cues_table(
+    cues: List[Cue],
+    max_chars_each: int = 120,
+    ad_indices: Optional[set] = None,
+) -> str:
+    """Renderiza as cenas agrupadas como tabela pro prompt.
+
+    Se `ad_indices` é fornecido (set de cue_ids 1-based), essas linhas
+    recebem prefixo `[VISUAL]` indicando que vêm de audio description
+    (descrição visual narrada). O LLM pode escolher tanto cues normais
+    quanto [VISUAL] — ambas têm cue_id válido.
+    """
+    ad_indices = ad_indices or set()
     lines = []
     for i, c in enumerate(cues):
         text = c.text[:max_chars_each].replace("\n", " ")
-        dur = c.end - c.start
-        lines.append(f"[{i+1}] {c.start:7.2f}-{c.end:7.2f} ({dur:4.1f}s) | {text}")
+        # Formato mm:ss em vez de segundos absolutos — reduz chance de LLM
+        # confundir timestamp (ex: 1133.88) com cue_id numérico.
+        start_mm = int(c.start // 60)
+        start_ss = c.start - start_mm * 60
+        end_mm = int(c.end // 60)
+        end_ss = c.end - end_mm * 60
+        mark = "[VISUAL] " if (i + 1) in ad_indices else ""
+        # `CUE=N` em vez de `[N]` — formato explícito pra o LLM não
+        # achar que o cue_id é algum outro número na linha.
+        lines.append(
+            f"CUE={i+1:<4}| {start_mm:02d}:{start_ss:05.2f}-{end_mm:02d}:{end_ss:05.2f} | {mark}{text}"
+        )
     return "\n".join(lines)
+
+
+def _visual_hints_block(ad_cues, max_chars_each=100, max_hints=200):
+    """OBSOLETO — mantido só pra compat. AD agora entra mesclada com cues
+    como selecionável (via `_merge_subtitle_and_ad`). Retorna vazio."""
+    return ""
+
+
+def _merge_subtitle_and_ad(
+    subtitle_cues: List[Cue],
+    ad_cues: List[Cue],
+) -> Tuple[List[Cue], set]:
+    """Mescla cues de diálogo e AD cronologicamente numa única lista
+    selecionável. Retorna (merged, ad_index_set).
+
+    AD entra como cue normal com prefixo `[VISUAL]` no texto (adicionado no
+    render). O LLM pode escolher tanto cue de diálogo quanto de AD,
+    recebendo `cue_id` válido pra ambas. Isso permite que beats de AÇÃO
+    VISUAL (fogo surge, dragão ruge, Coco corre) casem com o timestamp
+    EXATO do AD, em vez de cair numa cue de diálogo próxima mas errada.
+
+    `ad_index_set` é 1-based pra bater com `cue_id`. Usado no render da
+    tabela pra prefixar `[VISUAL]` só nas linhas certas.
+    """
+    merged = sorted(subtitle_cues + ad_cues, key=lambda c: c.start)
+    ad_ids = {id(c) for c in ad_cues}
+    ad_set = set()
+    for i, c in enumerate(merged):
+        if id(c) in ad_ids:
+            ad_set.add(i + 1)
+    return merged, ad_set
 
 
 def _beats_table(beats: List[NarrationBeat]) -> str:
@@ -198,6 +349,123 @@ def _extract_json_block(text: str) -> str:
     return text
 
 
+# Stopwords PT pra extração de keywords. Curta porque queremos só palavras
+# fortes pra validação (substantivos próprios + verbos de ação + termos raros).
+_STOPWORDS_PT = {
+    "a", "o", "as", "os", "um", "uma", "uns", "umas", "de", "da", "do", "das",
+    "dos", "em", "na", "no", "nas", "nos", "com", "sem", "por", "pra", "para",
+    "que", "qual", "quando", "como", "onde", "porque", "e", "ou", "mas", "se",
+    "ela", "ele", "elas", "eles", "é", "são", "foi", "vai", "está", "estão",
+    "tem", "têm", "ser", "estar", "fica", "ficou", "ficar", "uma", "outra",
+    "outros", "outras", "isso", "isto", "esse", "essa", "esses", "essas",
+    "muito", "pouco", "todo", "toda", "todos", "todas", "também", "ainda",
+    "agora", "depois", "antes", "sobre", "entre", "fala", "diz", "disse",
+    "fazer", "tudo", "nada", "algo", "alguém", "ninguém", "para", "tipo",
+}
+
+
+def _extract_keywords(text: str, min_len: int = 4, max_n: int = 4) -> List[str]:
+    """Extrai até `max_n` palavras-chave fortes de um texto curto.
+
+    Filtra stopwords e palavras muito curtas. Mantém substantivos próprios
+    (mantém capitalização original), verbos de ação distintivos, e termos
+    raros. Tudo lowercase pra comparação case-insensitive.
+    """
+    if not text:
+        return []
+    # Tokeniza preservando acentos
+    tokens = re.findall(r"[a-zA-ZÀ-ÿ]+", text.lower())
+    keywords = []
+    for t in tokens:
+        if len(t) < min_len:
+            continue
+        if t in _STOPWORDS_PT:
+            continue
+        keywords.append(t)
+        if len(keywords) >= max_n:
+            break
+    return keywords
+
+
+def _validate_matches_semantically(
+    matches: list,
+    grouped: List[Cue],
+    min_chosen_misses: int = 0,   # quantas keywords PODEM faltar na escolhida (0 = nenhuma)
+    min_score_gap: int = 2,       # candidato precisa ter >= esse a mais que escolhida
+) -> list:
+    """Validação CONSERVADORA: só substitui cue se há evidência forte de
+    alucinação do LLM.
+
+    Regra dispara só quando:
+    - cue escolhida tem ZERO matches de keywords do why
+    - existe outra cue com 2+ matches MAIS que a escolhida
+    - mínimo 2 keywords totais no why (filtro contra whys curtos demais)
+
+    Versão anterior (min_overlap=1) era agressiva e movia beats que o LLM
+    havia escolhido corretamente. Esta versão só age em casos óbvios:
+    why="Bruxa fala única esperança" + cue escolhida = "Kieffrey sobre porta-pena"
+    → claramente alucinação, troca.
+
+    Mas:
+    why="Coco esbarra em Agathe" + cue escolhida = "Coco e Agathe na cena"
+    (sem "esbarra" exato no texto) → não troca, talvez seja só fraseado
+    diferente.
+    """
+    if not matches or not grouped:
+        return matches
+
+    cue_lower = [c.text.lower() for c in grouped]
+
+    fixed = []
+    for m in matches:
+        try:
+            cue_id = int(m.get("cue_id") or 0)
+        except (ValueError, TypeError):
+            fixed.append(m)
+            continue
+
+        why = str(m.get("why") or "").strip()
+        keywords = _extract_keywords(why)
+
+        # Filtro: precisa ter pelo menos 2 keywords pra validar.
+        # Whys com 0-1 keywords são pouco distintivos pra busca confiável.
+        if len(keywords) < 2:
+            fixed.append(m)
+            continue
+
+        in_range = 1 <= cue_id <= len(grouped)
+        chosen_text = cue_lower[cue_id - 1] if in_range else ""
+
+        chosen_hits = sum(1 for kw in keywords if kw in chosen_text)
+
+        # Só dispara se chosen=0 hits (verdadeira alucinação)
+        if chosen_hits > min_chosen_misses:
+            fixed.append(m)
+            continue
+
+        # Procura melhor candidato — score precisa ser FORTE
+        best_i = -1
+        best_score = -1
+        for i, ctext in enumerate(cue_lower):
+            score = sum(1 for kw in keywords if kw in ctext)
+            if score > best_score:
+                best_score = score
+                best_i = i
+
+        # Substitui só se gap é GRANDE (>= min_score_gap)
+        if (
+            best_score >= chosen_hits + min_score_gap
+            and best_i >= 0
+            and (best_i + 1) != cue_id
+        ):
+            m = dict(m)
+            m["cue_id"] = best_i + 1
+            m["why"] = f"[validado] {why}"
+        fixed.append(m)
+
+    return fixed
+
+
 def match_beats_to_cues(
     beats: List[NarrationBeat],
     cues: List[Cue],
@@ -213,24 +481,53 @@ def match_beats_to_cues(
     mkv_path: str = "",
     avoid_landscape: bool = True,
     landscape_search_seconds: float = 3.0,
+    enforce_monotonicity: bool = False,  # desligado por default: roteiros de short costumam ser non-linear (hook no clímax → flashback → volta pra conclusão). O monotonic destruía isso empurrando beats "retrocedendo" pra perto do anterior, colocando 14 beats consecutivos na mesma cena. Deixar a LLM decidir — ela ACERTA o non-linear.
+    max_backward_seconds: float = 15.0,
+    ad_cues: Optional[List[Cue]] = None,
 ) -> List[SceneMatch]:
     """Monta prompt com cues agrupadas, chama LLM, valida cobertura, aplica
     snap bidirecional. Beats sem match da LLM herdam a cena do beat anterior
     (melhor que fallback proporcional pra continuidade visual).
+
+    `ad_cues` (opcional): cues vindos de Audio Description (Whisper do áudio
+    descritivo). Quando fornecidos, entram no prompt como descrição visual
+    marcada com `[VISUAL]`, enriquecendo a decisão do matcher. Não substitui
+    as cues de diálogo — apenas complementa.
     """
     if not beats:
         return []
 
-    # Agrupa cues contíguas — reduz volume de tokens sem perder contexto.
-    # Gap menor = mais grupos = LLM tem mais opções específicas.
-    grouped = group_cues(cues, max_gap=group_cues_gap)
+    # AD e diálogo mesclados cronologicamente — ambos viram cue_id selecionável.
+    # Isso permite beats de AÇÃO VISUAL casarem com o timestamp exato do AD
+    # (ex: "Agathe solta fogo" → cue [VISUAL] em 980s onde o AD diz "uma
+    # grande chama surge", em vez de cair numa cue de diálogo próxima em
+    # 991s onde Coco só menciona o fogo).
+    grouped_dialog = group_cues(cues, max_gap=group_cues_gap)
+    if ad_cues:
+        grouped_ad = group_cues(ad_cues, max_gap=max(group_cues_gap, 2.0))
+        grouped, ad_index_set = _merge_subtitle_and_ad(grouped_dialog, grouped_ad)
+    else:
+        grouped = grouped_dialog
+        ad_index_set = set()
 
     prompt = MATCHER_PROMPT.format(
         summary=(summary or "(sem resumo disponível)").strip(),
-        cues_table=_cues_table(grouped),
+        cues_table=_cues_table(grouped, ad_indices=ad_index_set),
+        visual_hints_block="",  # obsoleto — AD agora é selecionável na tabela
         beats_table=_beats_table(beats),
         n_beats=len(beats),
     )
+
+    # Dump do prompt em %TEMP%\ancopy\work\ pra debug. Permite inspeção do que
+    # a LLM recebeu quando a seleção sai estranha. Não afeta comportamento.
+    try:
+        import tempfile as _tmp
+        debug_dir = os.path.join(_tmp.gettempdir(), "ancopy", "work")
+        os.makedirs(debug_dir, exist_ok=True)
+        with open(os.path.join(debug_dir, "last_matcher_prompt.txt"), "w", encoding="utf-8") as f:
+            f.write(prompt)
+    except Exception:
+        pass
 
     raw = navy.chat_completion(
         api_key=api_key,
@@ -243,8 +540,26 @@ def match_beats_to_cues(
         # impactante do evento". Determinismo aqui matava criatividade.
     )
 
+    # Dump da resposta crua pra cross-reference com o prompt
+    try:
+        import tempfile as _tmp
+        debug_dir = os.path.join(_tmp.gettempdir(), "ancopy", "work")
+        with open(os.path.join(debug_dir, "last_matcher_response.txt"), "w", encoding="utf-8") as f:
+            f.write(raw or "(resposta vazia)")
+    except Exception:
+        pass
+
     body = _extract_json_block(raw)
     raw_matches = _parse_matches_resilient(body)
+
+    # NOTA: validação semântica DESABILITADA. A intuição era boa (corrigir
+    # quando LLM diz why correto mas devolve cue_id errado), mas na prática
+    # ela movia BEATS CERTOS pra cenas erradas mais vezes do que corrigia
+    # alucinações reais. Como o sanity check de cue_id (timestamp vs índice)
+    # já recupera o caso mais comum, a validação semântica vira ruído.
+    # Mantida no código pra possível uso futuro com algoritmo melhor.
+    # raw_matches = _validate_matches_semantically(raw_matches, grouped)
+
     by_beat = {int(m.get("beat")): m for m in raw_matches if m.get("beat") is not None}
 
     missing = [b.index for b in beats if b.index not in by_beat]
@@ -259,6 +574,20 @@ def match_beats_to_cues(
             cue_id = int(m.get("cue_id") or 0)
             if 1 <= cue_id <= len(grouped):
                 cue = grouped[cue_id - 1]
+            elif cue_id > len(grouped):
+                # SANITY CHECK: LLM às vezes confunde cue_id com o timestamp
+                # em segundos da linha (ex: devolve 1133 ao ver CUE=109 em
+                # 1133.88s). Quando o número está muito acima do range de
+                # índices válidos mas parece um timestamp plausível, faz
+                # busca reversa pela cue com start mais próximo.
+                best_i = min(
+                    range(len(grouped)),
+                    key=lambda i: abs(grouped[i].start - cue_id),
+                )
+                if abs(grouped[best_i].start - cue_id) < 30.0:
+                    cue = grouped[best_i]
+                    # Marca no why pra debug
+                    cue_id = best_i + 1
             why = str(m.get("why") or "").strip()
 
         if cue is None:
@@ -314,6 +643,15 @@ def match_beats_to_cues(
     # casos tipo "nada de coisas sujas" → cue com "dirty" exato.
     _fuzzy_refine_quoted_beats(results, cues)
 
+    # Monotonicidade temporal: beats consecutivos não podem retroceder muito.
+    # Resolve casos onde o LLM escolhe uma cue anterior pra um beat de
+    # fechamento (ex: beat 26 "será que elas vão sair dessa?" voltando 90s).
+    if enforce_monotonicity:
+        _enforce_temporal_monotonicity(
+            results, cues, scene_changes,
+            max_backward_seconds=max_backward_seconds,
+        )
+
     # Safety net anti-landscape: verifica se cada video_start tem rosto; se
     # não, tenta mover pra próxima scene change dentro da janela.
     if avoid_landscape and mkv_path and os.path.isfile(mkv_path):
@@ -322,6 +660,80 @@ def match_beats_to_cues(
         )
 
     return results
+
+
+def _enforce_temporal_monotonicity(
+    results: List[SceneMatch],
+    cues: List[Cue],
+    scene_changes: Optional[List[float]],
+    max_backward_seconds: float = 15.0,
+    lookback_window: int = 4,
+) -> int:
+    """Empurra beats que retrocederam demais pra frente no timeline.
+
+    Usa MEDIANA dos últimos `lookback_window` beats (não só o anterior)
+    como referência de "tempo atual". Isso previne outliers de contaminar
+    toda a sequência: se beat 1 foi parar num timestamp errado, os beats
+    seguintes ainda têm chance de ficar na região correta porque a mediana
+    ignora o outlier.
+
+    Regra:
+    - floor = median(últimos N video_starts) - max_backward_seconds
+    - Se video_start[i] < floor, consideramos violação e empurramos pra
+      frente achando a próxima cue com start >= floor.
+
+    Retorna quantos beats foram movidos.
+    """
+    if not results or len(results) < 2:
+        return 0
+
+    scene_changes = scene_changes or []
+    moved = 0
+    cues_sorted = sorted(cues, key=lambda c: c.start)
+
+    def _median(xs):
+        xs = sorted(xs)
+        n = len(xs)
+        if n == 0:
+            return 0.0
+        return xs[n // 2] if n % 2 == 1 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+    for i in range(1, len(results)):
+        cur = results[i]
+        window = results[max(0, i - lookback_window):i]
+        ref = _median([r.video_start for r in window])
+        floor = ref - max_backward_seconds
+
+        if cur.video_start >= floor:
+            continue  # OK
+
+        # Candidato 1: próxima cue com start >= floor
+        target_start = None
+        for c in cues_sorted:
+            if c.start >= floor:
+                target_start = c.start
+                break
+
+        # Se não achar ou o candidato está muito longe (>60s), usa o floor direto
+        if target_start is None or target_start > ref + 60.0:
+            target_start = floor
+
+        # Snap pra scene change mais próxima (pequena tolerância pra cada lado)
+        snapped_start = snap_to_scene(
+            target_start, scene_changes,
+            max_backward=2.0, max_forward=2.0,
+        )
+
+        old_start = cur.video_start
+        cur.video_start = max(0.0, snapped_start)
+        cur.video_end = cur.video_start + cur.beat.duration
+        cur.snapped = True
+        cur.why = (
+            f"[monotonic: {old_start:.1f}s→{cur.video_start:.1f}s] {cur.why}"
+        )
+        moved += 1
+
+    return moved
 
 
 # Palavras PT com tradução EN RARA/ESPECÍFICA — se a narração tem uma

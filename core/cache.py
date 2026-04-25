@@ -55,6 +55,99 @@ def set_llm(parts: List[str], content: str) -> None:
         pass
 
 
+# ----------------------------------------------------------------- Whisper (AD)
+def _whisper_path(key: str) -> str:
+    return os.path.join(CACHE_ROOT, "whisper", f"{key}.json")
+
+
+def get_whisper(parts: List[str]) -> Optional[dict]:
+    """Lê cache de transcrição Whisper. Devolve dict {cues, language, duration}
+    ou None. Cues vêm como listas [start, end, text] pra JSON-friendliness."""
+    key = _hash_parts(parts)
+    path = _whisper_path(key)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def set_whisper(parts: List[str], data: dict) -> None:
+    key = _hash_parts(parts)
+    path = _whisper_path(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------- Tradução
+# Bucket DEDICADO — não usa mais o pool do LLM. Isso protege traduções de
+# AD (caras: 400+ cues via LLM) contra limpezas de cache feitas pra forçar
+# regen do resumo/roteiro/matcher.
+def _translate_path(key: str) -> str:
+    return os.path.join(CACHE_ROOT, "translate", f"{key}.json")
+
+
+def get_translation(parts: List[str]) -> Optional[str]:
+    key = _hash_parts(parts)
+    path = _translate_path(key)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f).get("content") or None
+    except Exception:
+        return None
+
+
+def set_translation(parts: List[str], content: str) -> None:
+    key = _hash_parts(parts)
+    path = _translate_path(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"content": content, "preview": content[:120]},
+                f, ensure_ascii=False, indent=2,
+            )
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------- AniList enrichment
+# Cache do lookup de personagens canônicos (1 lookup por anime, persiste).
+def _anilist_path(key: str) -> str:
+    return os.path.join(CACHE_ROOT, "anilist", f"{key}.json")
+
+
+def get_anilist(parts: List[str]) -> Optional[dict]:
+    key = _hash_parts(parts)
+    path = _anilist_path(key)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def set_anilist(parts: List[str], data: dict) -> None:
+    key = _hash_parts(parts)
+    path = _anilist_path(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 # ----------------------------------------------------------------- TTS
 def _tts_dir(key: str) -> str:
     return os.path.join(CACHE_ROOT, "tts", key)

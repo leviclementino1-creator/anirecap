@@ -20,9 +20,10 @@ import json as _json
 import shutil as _shutil
 
 from core import (
-    audio_post, cache, captions, chunking, matcher, mkv,
-    scene_detect, script, subtitle, tts, video,
+    ad_transcribe, anilist, audio_post, cache, captions, chunking, matcher,
+    mkv, name_mapper, scene_detect, script, subtitle, translator, tts, video,
 )
+from core.cue import Cue
 from providers.navy import NavyError
 from ui import settings_modal, style, track_selector, update_modal
 from utils.binaries import BinaryNotFound
@@ -66,6 +67,11 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.mkv_path = ""           # caminho do .mkv pra scene detect + cut
         self.subtitle_path = ""      # .ass/.srt extraído (pra detectar OP/ED)
         self.scene_plan = []         # List[SceneMatch] depois de 3a
+        # AD é opcional: quando o usuário marca no modal, preenche aqui. Essas
+        # cues NÃO entram no transcript/resumo/roteiro — só enriquecem o matcher
+        # com descrição visual ("ela abre a porta devagar") pra casar beats
+        # com frames do .mkv de forma mais precisa.
+        self.ad_cues = []            # List[Cue] — descrição visual transcrita
 
         # Rótulo da animação de loading — muda por etapa
         self.loading_label = "Processando"
@@ -239,15 +245,27 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 threading.Thread(target=self._process_file, args=(file_path,), daemon=True).start()
 
     def _process_mkv(self, mkv_path):
-        """Lista faixas, deixa o usuário escolher, extrai e cai no fluxo padrão."""
+        """Lista legendas + AD, modal pra escolher, extrai e cai no fluxo.
+
+        Legenda é sempre a fonte primária do resumo/roteiro/narração.
+        AD é opcional — se escolhida, é transcrita em background e guardada
+        em self.ad_cues pra enriquecer o matcher de cenas.
+        """
         self.mkv_path = mkv_path  # guardado para scene detection + cortes
         try:
-            self.after(0, self.log, "Inspecionando faixas de legenda...")
+            self.after(0, self.log, "Inspecionando faixas do .mkv...")
             binaries_dir = self.cfg.get("binaries_dir", "")
-            tracks = mkv.list_subtitle_tracks(mkv_path, binaries_dir=binaries_dir)
-            text_tracks = [t for t in tracks if t.is_text]
 
-            if not tracks:
+            sub_tracks = mkv.list_subtitle_tracks(mkv_path, binaries_dir=binaries_dir)
+            text_tracks = [t for t in sub_tracks if t.is_text]
+
+            try:
+                all_audio = mkv.list_audio_tracks(mkv_path, binaries_dir=binaries_dir)
+            except Exception:
+                all_audio = []
+            ad_tracks = [t for t in all_audio if t.is_descriptive]
+
+            if not sub_tracks:
                 self.after(0, self.log, "[ERRO] Este .mkv não tem faixas de legenda.")
                 return
             if not text_tracks:
@@ -258,42 +276,306 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
                 return
 
-            if len(text_tracks) == 1:
-                chosen = text_tracks[0]
-                self.after(0, self.log, f"Faixa única: {chosen.label()}")
+            if ad_tracks:
+                self.after(
+                    0, self.log,
+                    f"🎙️ {len(ad_tracks)} faixa(s) de Audio Description detectada(s) "
+                    "— você pode marcar no modal pra usar como dica visual."
+                )
+
+            # Se só tem 1 legenda e não tem AD, pula modal
+            if len(text_tracks) == 1 and not ad_tracks:
+                chosen_sub = text_tracks[0]
+                chosen_ad = None
+                self.after(0, self.log, f"Faixa única: {chosen_sub.label()}")
             else:
-                # Precisa rodar na thread da UI e bloquear esta thread até escolher
                 pick_result = {"value": None}
                 done = threading.Event()
 
                 def _show_modal():
-                    pick_result["value"] = track_selector.choose_track(self, text_tracks)
+                    pick_result["value"] = track_selector.choose_track(
+                        self, text_tracks, ad_tracks=ad_tracks,
+                    )
                     done.set()
 
                 self.after(0, _show_modal)
                 done.wait()
-                chosen = pick_result["value"]
-                if chosen is None:
+                picked = pick_result["value"]
+                if picked is None:
                     self.after(0, self.log, "Seleção cancelada.")
                     return
+                chosen_sub, chosen_ad = picked
 
+            # 1) Pipeline normal da legenda (obrigatório)
             self.after(
                 0, self.log,
-                f"Extraindo faixa #{chosen.track_id} ({chosen.codec})...",
+                f"Extraindo legenda #{chosen_sub.track_id} ({chosen_sub.codec})...",
             )
             out_dir = os.path.join(tempfile.gettempdir(), "ancopy")
             os.makedirs(out_dir, exist_ok=True)
             base = os.path.splitext(os.path.basename(mkv_path))[0]
-            out_path = os.path.join(out_dir, base + chosen.extension)
-            mkv.extract_track(mkv_path, chosen.track_id, out_path, binaries_dir=binaries_dir)
-
+            sub_out = os.path.join(out_dir, base + chosen_sub.extension)
+            mkv.extract_track(
+                mkv_path, chosen_sub.track_id, sub_out, binaries_dir=binaries_dir,
+            )
             self.after(0, self.log, "Legenda extraída com sucesso.")
-            self._process_file(out_path)
+
+            # 2) Se marcou AD, precisamos das cues da legenda PRIMEIRO pra
+            # filtrar diálogo duplicado do AD. Parse rápido aqui, sem mexer
+            # no estado principal — o _process_file abaixo vai parsear de
+            # novo e popular self.cues propriamente.
+            self.ad_cues = []
+            if chosen_ad is not None:
+                try:
+                    sub_cues_for_filter = subtitle.load_subtitle(sub_out).cues
+                    self.ad_cues = self._extract_ad_cues(
+                        mkv_path, chosen_ad, binaries_dir,
+                        subtitle_cues=sub_cues_for_filter,
+                    )
+                except Exception as e:
+                    self.after(
+                        0, self.log,
+                        f"[AVISO] AD falhou ({e}). Vai rodar sem enriquecimento visual."
+                    )
+                    self.ad_cues = []
+
+            # 3) Carrega o transcript da legenda — daqui pra frente é fluxo legado
+            self._process_file(sub_out)
 
         except BinaryNotFound as e:
             self.after(0, self.log, f"[ERRO] {e}")
         except Exception as e:
             self.after(0, self.log, f"[ERRO] Falha ao processar .mkv: {e}")
+
+    def _extract_ad_cues(self, mkv_path, ad_track, binaries_dir, subtitle_cues=None):
+        """Extrai AD via Gemini Flash multimodal (backend Navy).
+
+        Gemini recebe o áudio direto e faz TUDO de uma vez:
+        - Ignora diálogo dos personagens (separa por voz no prompt)
+        - Transcreve só a narração AD
+        - Traduz FR→PT no processo
+        - Retorna cues com timestamps [mm:ss]
+
+        Não precisa mais de Whisper local, filtro temporal ou tradução
+        separada. `subtitle_cues` ignorado (mantido na assinatura por
+        compat, caso um dia seja útil pra outro backend).
+        """
+        out_dir = os.path.join(tempfile.gettempdir(), "ancopy")
+        os.makedirs(out_dir, exist_ok=True)
+        base = os.path.splitext(os.path.basename(mkv_path))[0]
+        audio_path = os.path.join(out_dir, f"{base}.ad{ad_track.extension}")
+
+        self.after(
+            0, self.log,
+            f"🎙️ Extraindo áudio AD (#{ad_track.track_id}, {ad_track.codec})...",
+        )
+        mkv.extract_track(
+            mkv_path, ad_track.track_id, audio_path, binaries_dir=binaries_dir,
+        )
+
+        # --- Cache por (backend, model, audio fingerprint) ------------
+        ad_model = self.cfg.get("ad_model") or "gemini-2.5-flash"
+        fingerprint = ad_transcribe.audio_fingerprint(audio_path)
+        cache_parts = ["ad-navy", ad_model, fingerprint]
+
+        cached = cache.get_whisper(cache_parts)
+        if cached and cached.get("cues"):
+            cues = [Cue(start=c[0], end=c[1], text=c[2]) for c in cached["cues"]]
+            self.after(
+                0, self.log,
+                f"🎙️ AD em cache ({len(cues)} segmentos, modelo: {ad_model})."
+            )
+        else:
+            api_key = self.cfg.get("navy_api_key") or ""
+            if not api_key:
+                self.after(
+                    0, self.log,
+                    "[ERRO] Sem API Key Navy — não consigo transcrever AD via LLM."
+                )
+                return []
+
+            base_url = self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL
+            self.after(
+                0, self.log,
+                f"🎙️ Enviando áudio AD pra {ad_model} via Navy "
+                f"(compacta pra ~6MB + upload + transcreve + traduz em uma call)..."
+            )
+
+            def _progress(msg):
+                self.after(0, self.log, f"   ↳ {msg}")
+
+            try:
+                result = ad_transcribe.transcribe_audio_via_navy(
+                    audio_path=audio_path,
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=ad_model,
+                    binaries_dir=binaries_dir,
+                    progress=_progress,
+                )
+            except Exception as e:
+                self.after(0, self.log, f"[ERRO] Transcrição Navy falhou: {e}")
+                return []
+
+            cues = result.cues
+            cache.set_whisper(cache_parts, {
+                "cues": [[c.start, c.end, c.text] for c in cues],
+                "language": result.language,
+                "duration": result.duration,
+            })
+            self.after(
+                0, self.log,
+                f"🎙️ {ad_model}: {len(cues)} cues AD (já em PT, já filtrado)."
+            )
+
+        if not cues:
+            self.after(0, self.log, "[AVISO] AD veio vazia — seguindo sem.")
+            return []
+
+        # Dump de debug: SRT pra inspeção manual
+        srt_path = os.path.splitext(audio_path)[0] + ".navy.srt"
+        try:
+            ad_transcribe.dump_cues_as_srt(cues, srt_path)
+        except Exception:
+            pass
+
+        self.after(
+            0, self.log,
+            f"✨ AD pronta como dica visual ({len(cues)} cues) — será usada no matcher."
+        )
+        return cues
+
+    def _normalize_character_names(self):
+        """Substitui nomes localizados (KIEFFREY) por canônicos (Qifrey)
+        no transcript, cues e ad_cues. Roda 1x por anime, cacheado em disco.
+
+        Não-fatal: qualquer falha (sem rede, sem API key, anime não achado)
+        loga warning e segue com nomes da legenda.
+        """
+        try:
+            mkv_path = self.mkv_path or self.subtitle_path
+            if not mkv_path:
+                return
+            base = os.path.basename(mkv_path)
+            anime_title = anilist.extract_title_from_filename(base)
+            if not anime_title:
+                return
+
+            # Cache lookup do AniList (persiste por anime)
+            anilist_cache_parts = ["anilist", anime_title.lower()]
+            cached = cache.get_anilist(anilist_cache_parts)
+            if cached and cached.get("characters"):
+                chars = [
+                    anilist.CharacterInfo(
+                        full=c["full"], role=c.get("role", ""),
+                        alternatives=c.get("alternatives", []),
+                    )
+                    for c in cached["characters"]
+                ]
+                self.after(
+                    0, self.log,
+                    f"📚 [cache] AniList: {len(chars)} personagens canônicos "
+                    f"de \"{anime_title}\"."
+                )
+            else:
+                self.after(
+                    0, self.log,
+                    f"📚 Buscando personagens canônicos de \"{anime_title}\" no AniList..."
+                )
+                chars = anilist.fetch_anime_characters(anime_title)
+                if not chars:
+                    self.after(
+                        0, self.log,
+                        f"[INFO] AniList não achou \"{anime_title}\". "
+                        "Mantendo nomes da legenda."
+                    )
+                    return
+                cache.set_anilist(anilist_cache_parts, {
+                    "title": anime_title,
+                    "characters": [
+                        {"full": c.full, "role": c.role,
+                         "alternatives": c.alternatives}
+                        for c in chars
+                    ],
+                })
+                self.after(
+                    0, self.log,
+                    f"📚 AniList: {len(chars)} personagens canônicos achados."
+                )
+
+            # Detecta nomes próprios na transcript
+            detected = name_mapper.detect_proper_nouns(self.transcript_text)
+            if not detected:
+                return
+
+            # Cache do mapping (depende dos detected + canonical, então usa
+            # hash de ambos. Persiste pra evitar re-call do Gemini)
+            canon_signature = ",".join(sorted(c.full for c in chars))
+            mapping_parts = [
+                "namemap", anime_title.lower(),
+                ",".join(sorted(detected)),
+                canon_signature,
+            ]
+            cached_map = cache.get_anilist(mapping_parts)  # reusa bucket
+            if cached_map:
+                mapping = cached_map.get("mapping") or {}
+            else:
+                api_key = self.cfg.get("navy_api_key") or ""
+                if not api_key:
+                    self.after(
+                        0, self.log,
+                        "[INFO] Sem API key Navy — pulando mapping de nomes."
+                    )
+                    return
+                base_url = self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL
+                self.after(
+                    0, self.log,
+                    f"🔄 Mapeando {len(detected)} nomes detectados → canônicos via Gemini..."
+                )
+                mapping = name_mapper.build_canonical_mapping(
+                    detected_names=detected,
+                    canonical_chars=chars,
+                    api_key=api_key,
+                    base_url=base_url,
+                    model="gemini-2.5-flash",
+                )
+                cache.set_anilist(mapping_parts, {"mapping": mapping})
+
+            if not mapping:
+                self.after(0, self.log, "📚 Nenhuma normalização necessária — nomes já canônicos.")
+                return
+
+            # Aplica nas três fontes: transcript_text, self.cues (text de cada
+            # cue), e self.ad_cues. Loga sumário das substituições.
+            substitutions = ", ".join(
+                f"{k}→{v}" for k, v in list(mapping.items())[:5]
+            )
+            extra = f" e mais {len(mapping) - 5}" if len(mapping) > 5 else ""
+            self.after(
+                0, self.log,
+                f"🔄 Normalizando nomes ({len(mapping)} subst.): {substitutions}{extra}"
+            )
+
+            self.transcript_text = name_mapper.apply_mapping_to_text(
+                self.transcript_text, mapping,
+            )
+            self.cues = [
+                Cue(
+                    start=c.start, end=c.end,
+                    text=name_mapper.apply_mapping_to_text(c.text, mapping),
+                )
+                for c in self.cues
+            ]
+            if self.ad_cues:
+                self.ad_cues = [
+                    Cue(
+                        start=c.start, end=c.end,
+                        text=name_mapper.apply_mapping_to_text(c.text, mapping),
+                    )
+                    for c in self.ad_cues
+                ]
+        except Exception as e:
+            self.after(0, self.log, f"[AVISO] Normalização de nomes falhou: {e}")
 
     def _process_file(self, file_path):
         time.sleep(0.8)
@@ -306,6 +588,11 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.summary_text = ""
             self.short_script_text = ""
             self.last_narration = None
+
+            # Normaliza nomes de personagens via AniList (KIEFFREY → Qifrey,
+            # Agathe → Agott, etc). Não-fatal: se falhar, segue com nomes
+            # localizados. Atualiza self.cues, self.transcript_text e ad_cues.
+            self._normalize_character_names()
 
             self.after(0, self.log, "Transcript pronto! Clique em ✨ Resumo.")
             self.after(500, lambda: self.btn_copy.place(
@@ -327,6 +614,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.last_narration = None
         self.mkv_path = ""
         self.scene_plan = []
+        self.ad_cues = []
 
         self.btn_copy.place_forget()
         self.btn_clear.configure(state="disabled")
@@ -364,7 +652,13 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         threading.Thread(target=self._call_summary, daemon=True).start()
 
     def _call_summary(self):
-        cache_parts = ["summary", self.selected_model, script.SUMMARY_PROMPT, self.transcript_text]
+        # Cache usa VERSÃO SEMÂNTICA do prompt, não o prompt literal — assim
+        # edits cosméticos não invalidam. Bumpar SUMMARY_PROMPT_VERSION em
+        # core/script.py pra forçar regen quando mudar a lógica.
+        cache_parts = [
+            "summary", script.SUMMARY_PROMPT_VERSION, self.selected_model,
+            self.transcript_text,
+        ]
         try:
             # Cache lookup
             if self.cfg.get("use_cache"):
@@ -372,32 +666,68 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 if cached:
                     self.is_loading = False
                     self.after(0, self._clear_loading_line)
-                    self.after(0, self.log, "🗂️ [cache] Resumo carregado do cache.")
+                    self.after(
+                        0, self.log,
+                        f"🗂️ [cache HIT] Resumo ({script.SUMMARY_PROMPT_VERSION}) "
+                        "— instantâneo, sem chamar LLM."
+                    )
                     self._write_full_to_log(cached, header="--- RESUMO ---", instant=True)
                     self.summary_text = cached.strip()
                     self.after(0, self.log, "Agora clique em 📝 Short pra gerar o roteiro.")
                     self.after(0, lambda: self.btn_short.configure(state="normal"))
                     return
 
-            chunks = script.generate_summary_stream(
-                api_key=self.cfg["navy_api_key"],
-                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
-                model=self.selected_model,
-                transcript=self.transcript_text,
-            )
-            full = self._stream_into_log(chunks, header="--- RESUMO ---")
-
-            # Fallback: stream veio vazio -> tenta non-streaming
-            if not full.strip():
-                self.after(0, self.log, "[AVISO] Stream vazio — tentando non-stream...")
-                full = script.generate_summary(
+            full = ""
+            stream_err = None
+            try:
+                chunks = script.generate_summary_stream(
                     api_key=self.cfg["navy_api_key"],
                     base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
                     model=self.selected_model,
                     transcript=self.transcript_text,
                 )
-                if full.strip():
-                    self._write_full_to_log(full, header="--- RESUMO ---")
+                full = self._stream_into_log(chunks, header="--- RESUMO ---")
+            except NavyError as e:
+                stream_err = str(e)
+                self.after(0, self.log, f"[AVISO] Stream do resumo falhou: {e}")
+
+            # Resumo tem mínimo mais alto (prompt pede 300-500 palavras).
+            # Menos que 200 palavras ou final sem pontuação = provável truncamento.
+            def _resumo_truncado(text: str) -> bool:
+                t = text.strip()
+                if not t:
+                    return True
+                if len(t.split()) < 200:
+                    return True
+                return t[-1] not in ".!?\"')"
+
+            if _resumo_truncado(full) or stream_err:
+                reason = ("vazio" if not full.strip()
+                          else f"curto ({len(full.split())} palavras)"
+                          if not stream_err else "erro de stream")
+                self.after(
+                    0, self.log,
+                    f"[AVISO] Resumo {reason} — refazendo via non-stream...",
+                )
+                try:
+                    retry = script.generate_summary(
+                        api_key=self.cfg["navy_api_key"],
+                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        model=self.selected_model,
+                        transcript=self.transcript_text,
+                    )
+                    if retry.strip() and not _resumo_truncado(retry):
+                        full = retry
+                        self._write_full_to_log(full, header="--- RESUMO (retry) ---")
+                    elif retry.strip():
+                        full = retry
+                        self._write_full_to_log(full, header="--- RESUMO (retry, curto) ---")
+                        self.after(
+                            0, self.log,
+                            "[AVISO] Retry também veio curto. Verifique o transcript."
+                        )
+                except NavyError as e:
+                    self.after(0, self.log, f"[ERRO] Retry falhou: {e}")
 
             if not full.strip():
                 self.after(0, self.log, "[ERRO] LLM devolveu vazio. Tente de novo ou troque o modelo.")
@@ -466,38 +796,84 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             except Exception as e:
                 self.after(0, self.log, f"[AVISO] Falha lendo override: {e}, usando LLM normal.")
 
-        cache_parts = ["short", self.selected_model, script.SHORT_SCRIPT_PROMPT, self.summary_text]
+        # Idem: usa versão semântica, não o prompt literal.
+        cache_parts = [
+            "short", script.SHORT_SCRIPT_PROMPT_VERSION, self.selected_model,
+            self.summary_text,
+        ]
         try:
             if self.cfg.get("use_cache"):
                 cached = cache.get_llm(cache_parts)
                 if cached:
                     self.is_loading = False
                     self.after(0, self._clear_loading_line)
-                    self.after(0, self.log, "🗂️ [cache] Roteiro short carregado do cache.")
+                    self.after(
+                        0, self.log,
+                        f"🗂️ [cache HIT] Roteiro ({script.SHORT_SCRIPT_PROMPT_VERSION}) "
+                        "— instantâneo."
+                    )
                     self._write_full_to_log(cached, header="--- ROTEIRO SHORT ---", instant=True)
                     self.short_script_text = cached.strip()
                     self.after(0, self.log, "Clique em 🎙️ Narração.")
                     self.after(0, lambda: self.btn_tts.configure(state="normal"))
                     return
 
-            chunks = script.generate_short_script_stream(
-                api_key=self.cfg["navy_api_key"],
-                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
-                model=self.selected_model,
-                summary=self.summary_text,
-            )
-            full = self._stream_into_log(chunks, header="--- ROTEIRO SHORT ---")
-
-            if not full.strip():
-                self.after(0, self.log, "[AVISO] Stream vazio — tentando non-stream...")
-                full = script.generate_short_script(
+            full = ""
+            stream_err = None
+            try:
+                chunks = script.generate_short_script_stream(
                     api_key=self.cfg["navy_api_key"],
                     base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
                     model=self.selected_model,
                     summary=self.summary_text,
                 )
-                if full.strip():
-                    self._write_full_to_log(full, header="--- ROTEIRO SHORT ---")
+                full = self._stream_into_log(chunks, header="--- ROTEIRO SHORT ---")
+            except NavyError as e:
+                # Stream encerrou abrupto (drop de conexão, truncamento).
+                # Não é erro fatal — o non-stream abaixo é retry confiável.
+                stream_err = str(e)
+                self.after(0, self.log, f"[AVISO] Stream falhou: {e}")
+
+            # Heurística de truncamento: output MUITO curto pra um short_script,
+            # ou não termina em pontuação forte. Dispara fallback non-stream.
+            def _looks_truncated(text: str) -> bool:
+                t = text.strip()
+                if not t:
+                    return True
+                words = len(t.split())
+                if words < 80:  # prompt pede 160-220 palavras
+                    return True
+                # Se não termina em pontuação de fim de frase, quase certo que cortou
+                return t[-1] not in ".!?\"')"
+
+            if _looks_truncated(full) or stream_err:
+                reason = ("stream vazio" if not full.strip()
+                          else f"truncado ({len(full.split())} palavras)"
+                          if not stream_err else "erro de stream")
+                self.after(
+                    0, self.log,
+                    f"[AVISO] Roteiro {reason} — refazendo via non-stream...",
+                )
+                try:
+                    retry = script.generate_short_script(
+                        api_key=self.cfg["navy_api_key"],
+                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        model=self.selected_model,
+                        summary=self.summary_text,
+                    )
+                    if retry.strip() and not _looks_truncated(retry):
+                        full = retry
+                        self._write_full_to_log(full, header="--- ROTEIRO SHORT (retry) ---")
+                    elif retry.strip():
+                        # Retry também veio meia boca, mas é o melhor que temos
+                        full = retry
+                        self._write_full_to_log(full, header="--- ROTEIRO SHORT (retry, curto) ---")
+                        self.after(
+                            0, self.log,
+                            "[AVISO] Retry também veio curto. Clique 📝 Short de novo se quiser outro resultado."
+                        )
+                except NavyError as e:
+                    self.after(0, self.log, f"[ERRO] Retry falhou: {e}")
 
             if not full.strip():
                 self.after(
@@ -795,14 +1171,29 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             from utils.paths import application_path as _app_path
             app_root = _app_path()
 
-            # 1. Chunk da narração em beats (prioriza pontuação forte)
+            # 1. Chunk da narração em beats — modo "1 frase = 1 beat".
+            # target=1.5s + soft=5.0s + max=7.0s significa:
+            # - Qualquer "." ou "!" depois de 1.5s = quebra (frases curtas
+            #   tipo "Caraca!" ou "Quase se queimou." viram beats próprios)
+            # - Vírgulas só servem como fallback em frases longas (>=5s)
+            # - Frases monstruosas (>7s) quebram forçado
+            # Comparado com "ABSURDA DE BOA" (target=3.5): quebra em pontos
+            # mais cedo, então frases curtas separadas viram beats separados
+            # em vez de ficarem coladas. Cada beat = 1 ideia clara → matcher
+            # acerta cena específica de cada uma.
             beats = chunking.chunk_by_time(
                 self.last_narration.alignment,
-                target_seconds=2.0, soft_threshold=3.5, max_seconds=5.0,
+                target_seconds=1.5, soft_threshold=5.0, max_seconds=7.0,
             )
             self.is_loading = False
             self.after(0, self._clear_loading_line)
-            self.after(0, self.log, f"✂️ Narração quebrada em {len(beats)} beats (~2.5s cada).")
+            align = self.last_narration.alignment
+            total_dur = align.ends[-1] if (align and align.ends) else 0
+            avg = (total_dur / len(beats)) if beats else 0
+            self.after(
+                0, self.log,
+                f"✂️ Narração quebrada em {len(beats)} beats (~{avg:.1f}s cada).",
+            )
 
             # OVERRIDE DE PLANO: se existir override_plan.json na raiz com N entradas
             # casando com beats atuais, usa ele direto e pula matcher+scene_detect+face.
@@ -880,6 +1271,21 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     f"{len(self.cues)} → {len(cues_for_match)} cues "
                     f"(signs excluído + OP/ED)",
                 )
+                # IMPORTANTE: filtrar AD cues também. Sem isso, o LLM podia
+                # escolher cue [VISUAL] que cai dentro da OP/ED — e víamos
+                # cenas tipo title card "EPISÓDIO 5" (dentro do ED) sendo
+                # selecionadas pra beats narrativos.
+                if self.ad_cues:
+                    n_ad_before = len(self.ad_cues)
+                    self.ad_cues = subtitle.filter_cues_outside_regions(
+                        self.ad_cues, regions,
+                    )
+                    if n_ad_before != len(self.ad_cues):
+                        self.after(
+                            0, self.log,
+                            f"🚫 AD cues também filtradas: "
+                            f"{n_ad_before} → {len(self.ad_cues)}"
+                        )
             else:
                 cues_for_match = cues_no_signs
                 self.after(
@@ -888,24 +1294,44 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
 
             # 3. Matcher LLM (via non-stream, com cache)
+            # Cache key inclui um digest das AD cues — se o usuário marcar/
+            # desmarcar AD entre runs, o plano precisa ser regenerado.
+            ad_signature = ""
+            if self.ad_cues:
+                ad_signature = f"ad:{len(self.ad_cues)}:" \
+                    + (self.ad_cues[0].text[:40] if self.ad_cues else "")
+            # Cache key usa VERSÃO SEMÂNTICA do prompt (não o conteúdo
+            # literal). Bumpar MATCHER_PROMPT_VERSION quando a mudança
+            # no prompt deve forçar regen. Edits cosméticos NÃO invalidam.
             cache_parts = [
-                "matcher", "v17-cc-support",
+                "matcher", matcher.MATCHER_PROMPT_VERSION,
                 self.selected_model,
-                matcher.MATCHER_PROMPT,
                 self.short_script_text,
                 self.summary_text,
                 str(len(self.cues)),
                 str(len(beats)),
+                ad_signature,
             ]
 
             llm_output = None
             if self.cfg.get("use_cache"):
                 llm_output = cache.get_llm(cache_parts)
                 if llm_output:
-                    self.after(0, self.log, "🗂️ [cache] Plano carregado do cache.")
+                    self.after(
+                        0, self.log,
+                        f"🗂️ [cache HIT] Plano ({matcher.MATCHER_PROMPT_VERSION}) "
+                        "— instantâneo."
+                    )
 
             if not llm_output:
-                self.after(0, self.log, "🤖 Consultando LLM pra casar beats com cenas...")
+                if self.ad_cues:
+                    self.after(
+                        0, self.log,
+                        f"🤖 Consultando LLM pra casar beats com cenas "
+                        f"(+{len(self.ad_cues)} cues AD como dica visual)...",
+                    )
+                else:
+                    self.after(0, self.log, "🤖 Consultando LLM pra casar beats com cenas...")
                 plan = matcher.match_beats_to_cues(
                     beats=beats, cues=cues_for_match,
                     summary=self.summary_text,
@@ -918,6 +1344,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     group_cues_gap=0.5,  # mais fino = LLM diferencia cenas de Sayu early vs late (cue-snap recupera precisão)
                     mkv_path=self.mkv_path,
                     avoid_landscape=True,
+                    ad_cues=self.ad_cues or None,
                 )
                 # Salva no cache o JSON serializado (simplificado)
                 if self.cfg.get("use_cache"):
@@ -964,6 +1391,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                         scene_changes=scenes,
                         max_backward_snap=3.0, max_forward_snap=0.5,
                         mkv_path=self.mkv_path, avoid_landscape=True,
+                        ad_cues=self.ad_cues or None,
                     )
 
             self.scene_plan = plan
