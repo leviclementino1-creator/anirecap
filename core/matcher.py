@@ -498,14 +498,16 @@ def match_beats_to_cues(
         return []
 
     # AD e diálogo mesclados cronologicamente — ambos viram cue_id selecionável.
-    # Isso permite beats de AÇÃO VISUAL casarem com o timestamp exato do AD
-    # (ex: "Agathe solta fogo" → cue [VISUAL] em 980s onde o AD diz "uma
-    # grande chama surge", em vez de cair numa cue de diálogo próxima em
-    # 991s onde Coco só menciona o fogo).
+    # Isso permite beats de AÇÃO VISUAL casarem com o timestamp exato do AD.
     grouped_dialog = group_cues(cues, max_gap=group_cues_gap)
+    # IMPORTANTE: AD cues NÃO são agrupadas. Cada descrição AD do Gemini é
+    # uma "ação visual atômica" (ex: "Uma grande chama irrompe" em 980s,
+    # "Coco arregala os olhos" em 1037s). Agrupar funde 30+ descrições em
+    # 1 bloco gigante e o LLM perde a granularidade — não consegue mais
+    # apontar pro momento exato. Sem agrupamento, cada AD vira sua linha
+    # CUE=N com texto curto e específico, fácil de selecionar.
     if ad_cues:
-        grouped_ad = group_cues(ad_cues, max_gap=max(group_cues_gap, 2.0))
-        grouped, ad_index_set = _merge_subtitle_and_ad(grouped_dialog, grouped_ad)
+        grouped, ad_index_set = _merge_subtitle_and_ad(grouped_dialog, list(ad_cues))
     else:
         grouped = grouped_dialog
         ad_index_set = set()
