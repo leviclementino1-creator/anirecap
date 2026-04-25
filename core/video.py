@@ -25,18 +25,33 @@ def cut_clips(
     ffmpeg = find_binary("ffmpeg", binaries_dir)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Buffer de segurança contra "ghost frame" (1 frame da cena anterior
+    # vazando no início do clipe). Mesmo com fast+fine seek, alguns mkvs
+    # com GOP esquisito ainda mostram 1 frame de transição. 3 frames a
+    # 24fps = 0.125s, arredondado pra 0.15s. Beat ainda cobre a duração
+    # da fala — só o INÍCIO do vídeo avança 0.15s.
+    GHOST_FRAME_GUARD = 0.15
+
     paths: List[str] = []
     for i, m in enumerate(plan):
         out = os.path.join(out_dir, f"clip_{i:03d}.mp4")
-        # -ss antes do -i + re-encode com libx264 = corte preciso
+        target_start = max(0.0, m.video_start + GHOST_FRAME_GUARD)
+        # CORTE COM PRECISÃO DE FRAME (sem mostrar 0.x s da cena anterior):
+        # - 1º -ss ANTES do -i: fast seek até ~5s antes do alvo (rápido)
+        # - 2º -ss DEPOIS do -i: fine seek exato dentro daqueles 5s
+        # - libx264 re-encoda no frame exato pedido
+        rough_seek = max(0.0, target_start - 5.0)
+        fine_seek = target_start - rough_seek
         cmd = [
             ffmpeg, "-y",
-            "-ss", f"{m.video_start:.3f}",
+            "-ss", f"{rough_seek:.3f}",
             "-i", mkv_path,
+            "-ss", f"{fine_seek:.3f}",
             "-t", f"{m.beat.duration:.3f}",
             "-an",
             "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
             "-pix_fmt", "yuv420p",
+            "-avoid_negative_ts", "make_zero",
             out,
         ]
         r = subprocess.run(

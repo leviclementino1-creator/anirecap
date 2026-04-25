@@ -90,6 +90,83 @@ def detect_scenes(
     return timestamps
 
 
+def find_clean_window(
+    cue_start: float,
+    cue_end: float,
+    beat_duration: float,
+    scenes: List[float],
+    proximity: float = 6.0,
+    min_clip_duration: float = 0.8,
+    edge_min_duration: float = 1.0,
+) -> float:
+    """Escolhe video_start próximo do cue.start que minimiza FLASHES no beat.
+
+    Animes têm scene changes a cada 0.5-1.5s em sequências de ação, então
+    cortes rápidos NO MEIO de um beat são naturais e não viram bug visual.
+    O que incomoda é flash NA BORDA (início/fim): a cena começa, vê 0.2s
+    dela, troca pra outra. Esse algoritmo distingue:
+
+    - Flash crítico (sub-clip < min_clip_duration): -200 nas bordas, -20 no meio
+    - Sub-clip < edge_min_duration nas bordas: -100 (ainda incômodo)
+    - Sub-clips >= edge_min_duration: bonus por tempo limpo
+
+    Algoritmo:
+    - Candidatos: scene changes em [cue_start - proximity, cue_start + proximity]
+                  + cue_start original (fallback)
+    - Score: ver acima, tie-breaker por proximidade do cue_start
+    """
+    if not scenes or beat_duration <= 0:
+        return cue_start
+
+    candidates = [cue_start]
+    for s in scenes:
+        if s < cue_start - proximity:
+            continue
+        if s > cue_start + proximity:
+            break
+        candidates.append(s)
+
+    best_start = cue_start
+    best_score = -float("inf")
+
+    for start in candidates:
+        end = start + beat_duration
+        cuts_inside = [s for s in scenes if start < s < end]
+        boundaries = [start] + cuts_inside + [end]
+        sub_durations = [
+            boundaries[i + 1] - boundaries[i]
+            for i in range(len(boundaries) - 1)
+        ]
+
+        if not sub_durations:
+            continue
+
+        score = 0.0
+        last_idx = len(sub_durations) - 1
+
+        for i, d in enumerate(sub_durations):
+            is_edge = (i == 0 or i == last_idx)
+
+            if d < min_clip_duration:
+                # Flash crítico (< 0.8s)
+                score -= 200 if is_edge else 20
+            elif is_edge and d < edge_min_duration:
+                # Borda curta mas não flash (entre 0.8 e 1.0s)
+                score -= 100
+            else:
+                # Sub-clip OK
+                score += d
+
+        # Tie-breaker: penalty leve por distância do cue_start
+        score -= abs(start - cue_start) * 0.3
+
+        if score > best_score:
+            best_score = score
+            best_start = start
+
+    return best_start
+
+
 def snap_to_scene(
     target_start: float,
     scenes: List[float],

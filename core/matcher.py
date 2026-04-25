@@ -13,14 +13,14 @@ from typing import List, Optional, Tuple
 from core.chunking import NarrationBeat
 from core.cue import Cue
 from core.face_detect import FaceDetector
-from core.scene_detect import snap_to_scene
+from core.scene_detect import snap_to_scene, find_clean_window
 from providers import navy
 
 
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v5-visual-symbols-2025-04-23"
+MATCHER_PROMPT_VERSION = "matcher-v6-hook-climax-2025-04-24"
 
 
 MATCHER_PROMPT = """\
@@ -102,7 +102,7 @@ REGRAS IMPORTANTES:
    Prefira SEMPRE cenas com PERSONAGENS VISÍVEIS em quadro.
 7. Se o beat narra um momento dramático, PRIORIZE a cena de reação/ação
    VISUAL daquele momento sobre a cena onde se menciona ele em diálogo.
-8. COLD OPEN / TEASER — REGRA ABSOLUTA:
+8. COLD OPEN / TEASER + HOOK CLIMAX — REGRA ABSOLUTA:
    Animes abrem com um COLD OPEN/TEASER (primeiros 1-5 minutos antes da
    música de abertura). Ele costuma MOSTRAR FRAGMENTOS e REPETIR FALAS do
    clímax do episódio pra criar expectativa. A MESMA fala aparece duas
@@ -113,17 +113,29 @@ REGRAS IMPORTANTES:
        timestamp < 300s. Se o match "perfeito" está em 5s, IGNORE-O e
        procure a mesma fala/cena em timestamp >600s. A primeira vez é
        teaser, a segunda vez é o clímax real.
-   (b) Em geral, se uma fala aparece duas vezes (teaser + clímax), SEMPRE
+   (b) HOOKS DE ACUSAÇÃO ("X foi acusada de Y", "X foi chamada de peso
+       morto", "X é a culpada de Z", "descobriu que W traiu") quase
+       sempre se referem ao CLÍMAX EMOCIONAL do episódio, que acontece no
+       ÚLTIMO TERÇO do ep. Pra esses hooks, escolha cue com timestamp
+       no ÚLTIMO TERÇO (após 60% da duração total do ep). Ex: ep de 24min
+       (1440s) → procure após 864s. Cuidado especial: escolher uma cue
+       no MEIO do ep só porque tem palavra em comum (ex: "Agott grita")
+       pode ser ERRO — Agott pode ter gritado várias vezes durante a
+       perseguição. O grito que IMPORTA pro hook é o do CLÍMAX (a
+       explosão emocional final).
+   (c) Em geral, se uma fala aparece duas vezes (teaser + clímax), SEMPRE
        escolha a TARDIA (maior timestamp). A regra vale pra QUALQUER beat,
        não só o hook.
-   (c) Beats de SETUP (meio da narração) podem usar cues pré-OP se forem
+   (d) Beats de SETUP (meio da narração) podem usar cues pré-OP se forem
        cenas legítimas (aula, apresentação de personagem, treino). Não
        confunda setup legítimo (ex: "Coco tentou um feitiço" em 73s) com
        flash de teaser (ex: "Agathe gritou sobre a mãe" em 5s — teaser
        porque clímax real é em 1145s).
-   (d) Exemplo CONCRETO: beat 01 "essa garota foi acusada de petrificar a
-       mãe" casa com cue em 5s (teaser) e cue em 1145s (clímax). ESCOLHA
-       1145s OBRIGATORIAMENTE. Escolher 5s é ERRO CRÍTICO.
+   (e) Exemplo CONCRETO: beat 01 "essa garota foi acusada de petrificar a
+       mãe" casa com cue em 5s (teaser), cue em 707s (Agathe gritando na
+       perseguição) e cue em 1145s (Agathe explodindo no beco no clímax).
+       ESCOLHA 1145s OBRIGATORIAMENTE — é o momento da ACUSAÇÃO REAL.
+       Escolher 5s ou 707s é ERRO CRÍTICO.
 9. REGRA DE SÍMBOLO VISUAL — IMPORTANTE PRA QUALIDADE EDITORIAL:
    Quando o beat menciona um OBJETO ICÔNICO ou ELEMENTO VISUAL FORTE,
    PREFIRA cue `[VISUAL]` que MOSTRA esse objeto/elemento em quadro,
@@ -537,9 +549,11 @@ def match_beats_to_cues(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         timeout=240.0,
-        # Sem temperature=0: a LLM precisa ser criativa pra escolher entre
-        # "cena literal onde se menciona o evento" vs "cena visualmente
-        # impactante do evento". Determinismo aqui matava criatividade.
+        # temperature=0.3: meio termo entre determinismo (que matava
+        # criatividade visual) e variação livre (que escolhia hooks errados
+        # entre runs idênticas). 0.3 mantém o LLM ousando em escolhas
+        # visuais mas sem cair em alucinações inconsistentes.
+        temperature=0.3,
     )
 
     # Dump da resposta crua pra cross-reference com o prompt
@@ -606,10 +620,24 @@ def match_beats_to_cues(
         video_start_raw = (cue.start if cue else 0.0) - pad_before
         video_start_raw = max(0.0, video_start_raw)
 
-        video_start = snap_to_scene(
-            video_start_raw, scene_changes,
-            max_backward=max_backward_snap, max_forward=max_forward_snap,
-        )
+        # find_clean_window avalia múltiplos scene changes em volta do cue
+        # e escolhe o que MINIMIZA flashes (sub-clips < 1s) dentro da
+        # duração do beat. Mais robusto que snap_to_scene puro, que só
+        # puxava pra cena adjacente sem checar o que vinha depois.
+        if cue and scene_changes:
+            video_start = find_clean_window(
+                cue_start=cue.start,
+                cue_end=cue.end,
+                beat_duration=b.duration,
+                scenes=scene_changes,
+                proximity=4.0,
+                min_clip_duration=1.0,
+            )
+        else:
+            video_start = snap_to_scene(
+                video_start_raw, scene_changes,
+                max_backward=max_backward_snap, max_forward=max_forward_snap,
+            )
         snapped = abs(video_start - video_start_raw) > 0.01
 
         video_end = video_start + b.duration
