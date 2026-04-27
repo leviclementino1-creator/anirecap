@@ -1239,7 +1239,15 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                 why=str(item.get("why", "[override]")),
                             ))
                         self.scene_plan = plan
-                        self._finish_plan_and_render(plan)
+                        # Override path ainda precisa de scenes pra multi-cut.
+                        # detect_scenes usa cache em disco, então é rápido em re-runs.
+                        self.after(0, self.log, "🎞️ Detectando cenas (pra multi-cut nos clipes)...")
+                        scenes_for_override = scene_detect.detect_scenes(
+                            self.mkv_path, threshold=0.35,
+                            binaries_dir=self.cfg.get("binaries_dir", ""),
+                            use_cache=True,
+                        )
+                        self._finish_plan_and_render(plan, scenes=scenes_for_override)
                         return
                 except Exception as e:
                     self.after(0, self.log, f"[AVISO] Falha lendo override_plan.json: {e}")
@@ -1437,7 +1445,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             except Exception as e:
                 self.after(0, self.log, f"[AVISO] Não consegui salvar snapshot: {e}")
 
-            self._finish_plan_and_render(plan)
+            self._finish_plan_and_render(plan, scenes=scenes)
             return
 
         except Exception as e:
@@ -1448,9 +1456,12 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda: self.btn_plano.configure(state="normal"))
             self.after(0, lambda: self.btn_clear.configure(state="normal"))
 
-    def _finish_plan_and_render(self, plan):
+    def _finish_plan_and_render(self, plan, scenes=None):
         """Parte final do pipeline: log do plano + cut + captions + render.
         Extraído de _call_plan pra poder ser chamado do caminho override também.
+
+        `scenes`: lista de timestamps de scene changes (segundos). Usado pelo
+        cut_clips pra decidir multi-cut (sub-clipes por beat).
         """
         try:
             # Log do plano (inserção instantânea)
@@ -1477,6 +1488,10 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 plan=plan,
                 out_dir=clips_dir,
                 binaries_dir=self.cfg.get("binaries_dir", ""),
+                scene_changes=scenes or [],
+                subclip_target_duration=float(
+                    self.cfg.get("subclip_target_duration", 2.0)
+                ),
             )
 
             # 6. Captions word-by-word — posição vertical configurável no ⚙️

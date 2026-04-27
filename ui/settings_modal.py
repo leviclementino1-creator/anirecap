@@ -265,6 +265,45 @@ def open_settings(parent, current: dict, on_saved):
     )
     cap_slider.pack(side="left", fill="x", expand=True, padx=8)
 
+    # =================== Ritmo dos cortes (sub-cenas) ===================
+    cuts_section = ctk.CTkLabel(
+        container, text="✂️ Ritmo dos cortes",
+        font=style.FONT_LABEL,
+    )
+    cuts_section.pack(anchor="w", pady=(16, 4))
+
+    cuts_hint = ctk.CTkLabel(
+        container,
+        text="Tempo médio por sub-cena dentro de cada beat.\n"
+             "1.0s = ritmo bem rápido (TikTok pesado) · 2.0s = padrão · 4.0s = cenas longas",
+        font=("Inter", 10), text_color="gray", justify="left",
+        wraplength=420,
+    )
+    cuts_hint.pack(anchor="w", pady=(0, 8))
+
+    initial_sub = float(current.get("subclip_target_duration", 2.0))
+    initial_sub = max(1.0, min(4.0, initial_sub))
+
+    sub_row = ctk.CTkFrame(container, fg_color="transparent")
+    sub_row.pack(fill="x", pady=(4, 0))
+
+    sub_lbl = ctk.CTkLabel(sub_row, text="Tempo médio sub-cena", font=style.FONT_SMALL, width=180, anchor="w")
+    sub_lbl.pack(side="left")
+
+    sub_value_lbl = ctk.CTkLabel(sub_row, text=f"{initial_sub:.1f}s", font=style.FONT_SMALL, width=50)
+    sub_value_lbl.pack(side="right")
+
+    var_sub = ctk.DoubleVar(value=initial_sub)
+
+    def _on_sub_change(v):
+        sub_value_lbl.configure(text=f"{float(v):.1f}s")
+
+    sub_slider = ctk.CTkSlider(
+        sub_row, from_=1.0, to=4.0, variable=var_sub, command=_on_sub_change,
+        number_of_steps=30,
+    )
+    sub_slider.pack(side="left", fill="x", expand=True, padx=8)
+
     # =================== Outras configs ===================
     entry_bin = add_field(
         "Pasta dos binários (fallback — opcional)",
@@ -304,6 +343,8 @@ def open_settings(parent, current: dict, on_saved):
             "music_volume_db": float(var_music_db.get()),
             # Captions — posição vertical (10-90% → 0.10-0.90)
             "captions_vertical_pct": var_cap_pct.get() / 100.0,
+            # Ritmo dos cortes — tempo médio por sub-cena (segundos)
+            "subclip_target_duration": float(var_sub.get()),
             "use_cache": bool(switch_cache_var.get()),
             "binaries_dir": entry_bin.get().strip(),
         })

@@ -10,6 +10,7 @@ import subprocess
 from typing import List, Optional, Tuple
 
 from core.matcher import SceneMatch
+from core.scene_detect import pick_subclips
 from utils.binaries import find_binary
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -21,40 +22,112 @@ def cut_clips(
     out_dir: str,
     binaries_dir: str = "",
     on_progress=None,
+    scene_changes: Optional[List[float]] = None,
+    subclip_target_duration: float = 2.0,
 ) -> List[str]:
-    """Corta cada beat do plano em um mp4 separado. Devolve a lista ordenada."""
+    """Corta cada beat do plano em um mp4 separado.
+
+    Pra cada beat, decide entre:
+    - SINGLE-CUT: 1 clip contínuo (modo legado, quando subclip_target_duration
+      é >= beat.duration ou não há scene_changes adjacentes pra dividir).
+    - MULTI-CUT: 2+ sub-clipes da janela de contexto, concatenados via
+      filter_complex trim+concat. Cada sub-clipe ~subclip_target_duration
+      seg, respeitando scene changes naturais. Cria ritmo TikTok.
+    """
     ffmpeg = find_binary("ffmpeg", binaries_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Buffer de segurança contra "ghost frame" (1 frame da cena anterior
-    # vazando no início do clipe). Mesmo com fast+fine seek, alguns mkvs
-    # com GOP esquisito ainda mostram 1 frame de transição. 3 frames a
-    # 24fps = 0.125s, arredondado pra 0.15s. Beat ainda cobre a duração
-    # da fala — só o INÍCIO do vídeo avança 0.15s.
     GHOST_FRAME_GUARD = 0.15
+    scene_changes = scene_changes or []
+
+    def _scene_start_of(t: float) -> float:
+        """Retorna o início da cena que contém o timestamp `t`.
+        Procura o maior scene change <= t. Se nenhum, retorna 0.0."""
+        prev = 0.0
+        for s in scene_changes:
+            if s > t:
+                break
+            prev = s
+        return prev
 
     paths: List[str] = []
+    last_scene_start: Optional[float] = None  # cena onde o beat anterior TERMINOU
     for i, m in enumerate(plan):
         out = os.path.join(out_dir, f"clip_{i:03d}.mp4")
-        target_start = max(0.0, m.video_start + GHOST_FRAME_GUARD)
-        # CORTE COM PRECISÃO DE FRAME (sem mostrar 0.x s da cena anterior):
-        # - 1º -ss ANTES do -i: fast seek até ~5s antes do alvo (rápido)
-        # - 2º -ss DEPOIS do -i: fine seek exato dentro daqueles 5s
-        # - libx264 re-encoda no frame exato pedido
-        rough_seek = max(0.0, target_start - 5.0)
-        fine_seek = target_start - rough_seek
-        cmd = [
-            ffmpeg, "-y",
-            "-ss", f"{rough_seek:.3f}",
-            "-i", mkv_path,
-            "-ss", f"{fine_seek:.3f}",
-            "-t", f"{m.beat.duration:.3f}",
-            "-an",
-            "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
-            "-pix_fmt", "yuv420p",
-            "-avoid_negative_ts", "make_zero",
-            out,
-        ]
+
+        # Sub-clipes começam em m.video_start (posição que o matcher escolheu),
+        # NÃO em m.cue.start — quando matcher snappou, video_start é o ponto bom.
+        cue_start = m.video_start
+        cue_end = max(
+            m.video_end,
+            m.cue.end if m.cue else (m.video_start + m.beat.duration),
+        )
+        subclips = pick_subclips(
+            cue_start=cue_start,
+            cue_end=cue_end,
+            beat_duration=m.beat.duration,
+            scenes=scene_changes,
+            target_subclip_duration=subclip_target_duration,
+            avoid_scene_start=last_scene_start,
+        )
+
+        # Atualiza state pra próximo beat: cena onde o ÚLTIMO sub-clipe está
+        if subclips:
+            last_sub_start = subclips[-1][0]
+            last_scene_start = _scene_start_of(last_sub_start)
+
+        if len(subclips) == 1:
+            # === SINGLE-CUT (modo simples, c/ ghost guard) ===
+            sub_start, sub_dur = subclips[0]
+            target_start = max(0.0, sub_start + GHOST_FRAME_GUARD)
+            rough_seek = max(0.0, target_start - 5.0)
+            fine_seek = target_start - rough_seek
+            cmd = [
+                ffmpeg, "-y",
+                "-ss", f"{rough_seek:.3f}",
+                "-i", mkv_path,
+                "-ss", f"{fine_seek:.3f}",
+                "-t", f"{sub_dur:.3f}",
+                "-an",
+                "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+                "-pix_fmt", "yuv420p",
+                "-avoid_negative_ts", "make_zero",
+                out,
+            ]
+        else:
+            # === MULTI-CUT (filter_complex trim + concat) ===
+            # Rough seek pra perto do PRIMEIRO sub-clipe pra acelerar decode.
+            # Trim filters usam timestamps RELATIVOS ao -ss.
+            rough_seek = max(0.0, min(s for s, _ in subclips) - 1.0)
+            trim_filters = []
+            concat_inputs = []
+            for j, (sub_start, sub_dur) in enumerate(subclips):
+                rel_start = sub_start - rough_seek
+                rel_end = rel_start + sub_dur
+                trim_filters.append(
+                    f"[0:v]trim=start={rel_start:.3f}:end={rel_end:.3f},"
+                    f"setpts=PTS-STARTPTS[v{j}]"
+                )
+                concat_inputs.append(f"[v{j}]")
+            filter_str = (
+                ";".join(trim_filters)
+                + ";"
+                + "".join(concat_inputs)
+                + f"concat=n={len(subclips)}:v=1:a=0[out]"
+            )
+            cmd = [
+                ffmpeg, "-y",
+                "-ss", f"{rough_seek:.3f}",
+                "-i", mkv_path,
+                "-filter_complex", filter_str,
+                "-map", "[out]",
+                "-an",
+                "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+                "-pix_fmt", "yuv420p",
+                "-avoid_negative_ts", "make_zero",
+                out,
+            ]
+
         r = subprocess.run(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace",
@@ -63,7 +136,8 @@ def cut_clips(
         if r.returncode != 0 or not os.path.isfile(out):
             raise RuntimeError(
                 f"Falha cortando clipe {i+1}/{len(plan)} "
-                f"(mkv {m.video_start:.2f}s): {r.stderr[:300]}"
+                f"(mkv {m.video_start:.2f}s, {len(subclips)} subs): "
+                f"{r.stderr[:300]}"
             )
         paths.append(out)
         if on_progress:

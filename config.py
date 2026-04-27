@@ -51,6 +51,9 @@ _DEFAULTS = {
     # Posição vertical das captions (0.0 = topo, 1.0 = base)
     # 0.30 = acima do vídeo central, 0.50 = no meio do vídeo, 0.78 = em baixo
     "captions_vertical_pct": 0.40,
+    # Tempo médio por sub-cena dentro de um beat (cortes rápidos estilo TikTok)
+    # 1.0 = ritmo bem rápido, 2.0 = padrão, 4.0 = cenas longas
+    "subclip_target_duration": 2.0,
     # Cache em disco (economiza tokens em testes repetidos)
     "use_cache": False,
 }
