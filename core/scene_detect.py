@@ -177,120 +177,156 @@ def pick_subclips(
     min_subclip: float = 1.0,
     avoid_scene_start: Optional[float] = None,
 ) -> List[tuple]:
-    """Decompõe um beat em múltiplos sub-clipes pra ritmo de short.
+    """Decompõe um beat em N sub-clipes equilibrados, 1 por cena.
 
-    Em vez de cortar 1 clipe contínuo de `beat_duration` segundos da janela
-    de contexto, divide em N sub-clipes de ~target_subclip_duration cada,
-    respeitando scene changes naturais como pontos de corte.
+    Filosofia: melhor 3 sub-clipes de 2.3s cada do que 2 de 2s + 1 de 1s
+    (que vira flash). Distribui beat_duration uniformemente entre as cenas
+    viáveis adjacentes em vez de pegar `target` rígido em cada uma.
 
-    Comportamento:
-    - Se a janela tem scene changes: usa eles como boundaries naturais.
-    - Se uma cena é mais longa que target (ex: 6s sem cuts): split artificial,
-      pulando 0.3s entre sub-clipes pra criar movimento.
-    - Sub-clipe mínimo: 1.0s (sem flashes).
-    - Skip de 0.15s logo após cada scene change (evita ghost frame).
-    - Sobra de tempo é distribuída SOMENTE dentro dos sub-clipes existentes
-      (sem estourar scene boundaries — evita flash final).
+    Algoritmo:
+    1. Beat curto (≤ target) e cena cabe inteira (com snap pra trás): single-cut.
+    2. Caso geral:
+       - Coleta cenas viáveis na janela (size ≥ NON_FLASH = 0.8s)
+       - N = round(beat_duration / target), capped por len(viable)
+       - Reduz N enquanto beat_duration/N < NON_FLASH (evita flash)
+       - Distribui beat_duration / N por cena, capped pelo tamanho da cena
+       - Sobra de cenas curtas flui pra próximas
+       - Se ainda sobra: estende última (último recurso)
 
-    `avoid_scene_start`: timestamp do início da cena onde o BEAT ANTERIOR
-    terminou. Se o primeiro candidato deste beat cair na mesma cena, pula
-    pra próxima cena pra evitar repetição visual entre beats.
+    `avoid_scene_start`: cena onde o BEAT anterior terminou. Pula ela pra
+    evitar repetição visual entre beats.
 
-    Retorna lista de (start, duration). Soma das durations = beat_duration.
-    Se nada funciona (cue muito curta, sem scenes adjacentes), fallback pra
-    1 sub-clipe contínuo de cue_start a cue_start+beat_duration.
+    Retorna lista de (start, duration). Soma ≈ beat_duration.
     """
     GHOST_GUARD = 0.15
-    EXTRA_PAUSE = 0.3   # gap entre sub-clipes da mesma cena (movimento artificial)
-    SAFETY = 0.05       # margem pra não encostar em scene boundary ao estender
+    SAFETY = 0.05       # margem pra não encostar em scene boundary
+    NON_FLASH = 0.8     # sub-clipe < 0.8s vira flash visível
 
     if beat_duration <= 0:
         return [(cue_start, beat_duration)]
 
+    # === ESTRATÉGIA 1: beat até 1.5x target + cena cabe inteira → single-cut ===
+    # Se a cena onde cue_start está cobre o beat (com snap pra trás se preciso),
+    # devolve um único sub-clipe sem precisar dividir. Threshold ampliado pra
+    # 1.5x target (default 3.0s) pra cobrir beats médios também — evita
+    # multi-cut desnecessário quando uma cena natural cabe tudo.
+    single_cut_threshold = target_subclip_duration * 1.5
+    if scenes and beat_duration <= single_cut_threshold:
+        cur_scene_start = max(
+            (s for s in scenes if s <= cue_start), default=0.0
+        )
+        next_scene_after = next(
+            (s for s in scenes if s > cue_start), float("inf")
+        )
+        cena_room_from_cue = next_scene_after - cue_start
+        cena_total = next_scene_after - cur_scene_start
+        if cena_room_from_cue >= beat_duration + SAFETY:
+            # Cabe sem snappar pra trás. Se cue_start cai EXATAMENTE numa
+            # scene change (matcher snappou), adiciona ghost guard pra não
+            # pegar 1 frame da cena anterior.
+            near_scene = next(
+                (s for s in scenes if abs(s - cue_start) < 0.05), None
+            )
+            if (
+                near_scene is not None
+                and cena_room_from_cue >= beat_duration + GHOST_GUARD + SAFETY
+            ):
+                return [(cue_start + GHOST_GUARD, beat_duration)]
+            return [(cue_start, beat_duration)]
+        if cena_total >= beat_duration + GHOST_GUARD + SAFETY:
+            # Snappa pra trás dentro da MESMA cena
+            deficit = (beat_duration + SAFETY) - cena_room_from_cue
+            min_floor = cur_scene_start + GHOST_GUARD
+            new_start = max(min_floor, cue_start - deficit)
+            return [(new_start, beat_duration)]
+
+    # === ESTRATÉGIA 2: distribuição equilibrada entre N cenas ===
     win_start = max(0.0, cue_start)
     win_end = cue_end + context_pad_after
-    # Garante que a janela cobre pelo menos beat_duration + folga
     if win_end < win_start + beat_duration + 2.0:
         win_end = win_start + beat_duration + 2.0
 
-    # Boundaries pra varrer: começo da janela + scene changes dentro dela
     scene_set = set(scenes)
     boundaries = sorted(set(
         [win_start] + [s for s in scenes if win_start < s < win_end]
     ))
 
-    # Se o beat anterior terminou numa cena cujo início bate com o primeiro
-    # boundary deste beat, pula essa cena pra evitar repetição visual.
-    if avoid_scene_start is not None and boundaries:
-        first_b = boundaries[0]
-        # `avoid_scene_start` é o início da cena anterior; se for igual ou
-        # bem próximo de `first_b`, são a mesma cena — descarta.
-        if abs(first_b - avoid_scene_start) < 0.5 and len(boundaries) > 1:
-            boundaries = boundaries[1:]
+    # Coleta cenas viáveis: (start_after_ghost_guard, max_size)
+    viable: List[tuple] = []
+    for i, b in enumerate(boundaries):
+        actual = b + GHOST_GUARD if b in scene_set else b
+        nxt = boundaries[i + 1] if i + 1 < len(boundaries) else win_end
+        size = nxt - actual - SAFETY
+        if size >= NON_FLASH:
+            viable.append((actual, size))
 
+    # Pula primeira cena se for a mesma onde o beat anterior terminou
+    if avoid_scene_start is not None and viable:
+        first_actual = viable[0][0]
+        first_scene_start = first_actual - GHOST_GUARD if first_actual > 0 else first_actual
+        if abs(first_scene_start - avoid_scene_start) < 0.5 and len(viable) > 1:
+            viable = viable[1:]
+
+    if not viable:
+        return [(cue_start, beat_duration)]
+
+    # Decide N (número de sub-clipes / cenas a usar)
+    n_ideal = max(1, round(beat_duration / target_subclip_duration))
+    n = min(n_ideal, len(viable))
+
+    # Garante que as N cenas selecionadas COBREM o beat. Se a soma do tamanho
+    # delas é menor que beat_duration, sobra carry no final que estoura a
+    # última boundary (= flash). Inclui mais cenas até cobrir.
+    while n < len(viable) and sum(v[1] for v in viable[:n]) < beat_duration + SAFETY:
+        n += 1
+
+    # Não deixa fatia média virar flash. Reduz N enquanto avg < piso, MAS
+    # NÃO reduz abaixo do necessário pra cobertura (preferimos sub-clipe curto
+    # a estouro de boundary).
+    min_n_for_coverage = 1
+    cumsum = 0.0
+    for i, (_, sz) in enumerate(viable[:n]):
+        cumsum += sz
+        if cumsum >= beat_duration + SAFETY:
+            min_n_for_coverage = i + 1
+            break
+    else:
+        min_n_for_coverage = n  # se não cobre, mantém o que tem
+
+    while n > max(1, min_n_for_coverage) and (beat_duration / n) < NON_FLASH:
+        n -= 1
+
+    avg = beat_duration / n
+    selected = viable[:n]
+
+    # Distribui: cada cena pega `avg + sobra`, capped pelo tamanho.
+    # Sobra (quando cena é menor que avg) flui pra próxima.
     subclips: List[tuple] = []
-    total_needed = beat_duration
+    carry = 0.0
+    for i, (cstart, csize) in enumerate(selected):
+        wanted = avg + carry
+        take = min(wanted, csize)
+        carry = wanted - take
+        subclips.append((cstart, take))
 
-    for i, b_start in enumerate(boundaries):
-        if total_needed < 0.3:
-            break
-
-        # Skip de ghost guard SE essa boundary é uma scene change real
-        # (não a borda inicial da janela)
-        if b_start in scene_set:
-            actual_start = b_start + GHOST_GUARD
-        else:
-            actual_start = b_start
-
-        next_b = boundaries[i + 1] if i + 1 < len(boundaries) else win_end
-        cena_remaining = next_b - actual_start
-
-        if cena_remaining < min_subclip:
-            continue  # cena curta = flash, pula
-
-        # Dentro desta cena, cria sub-clipes pulando target+pause cada
-        cur = actual_start
-        while cur + min_subclip <= next_b and total_needed >= min_subclip:
-            max_take = min(target_subclip_duration, next_b - cur, total_needed)
-            if max_take < min_subclip:
+    # Se ainda sobrou tempo (cenas pequenas demais), tenta usar próxima cena
+    # viável fora das selecionadas.
+    if carry > SAFETY and len(viable) > n:
+        for extra_start, extra_size in viable[n:]:
+            if carry <= SAFETY:
                 break
-            subclips.append((cur, max_take))
-            total_needed -= max_take
-            cur += max_take + EXTRA_PAUSE
+            take = min(carry, extra_size)
+            if take >= NON_FLASH:
+                subclips.append((extra_start, take))
+                carry -= take
 
-        if total_needed < min_subclip:
-            break
-
-    # Distribui o tempo restante entre sub-clipes existentes, do último pro
-    # primeiro, SEM estourar scene boundaries nem o início do próximo sub-clipe.
-    # Isso evita o "flash final" antigo (sub-clipe esticava pra além da cena).
-    if total_needed > 0 and subclips:
-        for i in range(len(subclips) - 1, -1, -1):
-            if total_needed <= SAFETY:
-                break
-            sub_s, sub_d = subclips[i]
-            sub_end = sub_s + sub_d
-            # Cap superior: próxima scene boundary OU início do próximo sub-clipe
-            next_scene = next((s for s in scenes if s > sub_end), float("inf"))
-            next_sub_start = (
-                subclips[i + 1][0] if i + 1 < len(subclips) else float("inf")
-            )
-            cap = min(next_scene, next_sub_start) - SAFETY
-            room = max(0.0, cap - sub_end)
-            take = min(room, total_needed)
-            if take > 0:
-                subclips[i] = (sub_s, sub_d + take)
-                total_needed -= take
-
-        # Se MESMO ASSIM sobrou tempo (scenes muito juntas), estende o último
-        # mesmo passando da boundary — flash curto é melhor que dessincronia
-        # áudio/vídeo. Caso raro.
-        if total_needed > SAFETY:
-            last_s, last_d = subclips[-1]
-            subclips[-1] = (last_s, last_d + total_needed)
+    # Último recurso: estende o último sub-clipe (pode estourar boundary,
+    # mas a soma das durações precisa = beat_duration pra sync com áudio).
+    if carry > SAFETY and subclips:
+        ls, ld = subclips[-1]
+        subclips[-1] = (ls, ld + carry)
 
     if not subclips:
-        # Fallback: nenhum sub-clipe válido (cue curtíssima sem scenes próximas)
         return [(cue_start, beat_duration)]
 
     return subclips

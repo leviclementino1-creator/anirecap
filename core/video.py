@@ -37,7 +37,6 @@ def cut_clips(
     ffmpeg = find_binary("ffmpeg", binaries_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    GHOST_FRAME_GUARD = 0.15
     scene_changes = scene_changes or []
 
     def _scene_start_of(t: float) -> float:
@@ -77,9 +76,12 @@ def cut_clips(
             last_scene_start = _scene_start_of(last_sub_start)
 
         if len(subclips) == 1:
-            # === SINGLE-CUT (modo simples, c/ ghost guard) ===
+            # === SINGLE-CUT (modo simples) ===
+            # NÃO adiciona ghost guard aqui: pick_subclips já entrega timestamps
+            # seguros (com ghost guard onde aplicável). Adicionar de novo aqui
+            # estouraria a próxima scene boundary = flash visível.
             sub_start, sub_dur = subclips[0]
-            target_start = max(0.0, sub_start + GHOST_FRAME_GUARD)
+            target_start = max(0.0, sub_start)
             rough_seek = max(0.0, target_start - 5.0)
             fine_seek = target_start - rough_seek
             cmd = [
