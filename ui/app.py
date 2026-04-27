@@ -21,11 +21,12 @@ import shutil as _shutil
 
 from core import (
     ad_transcribe, anilist, audio_post, cache, captions, chunking, matcher,
-    mkv, name_mapper, scene_detect, script, subtitle, translator, tts, video,
+    mkv, music, name_mapper, scene_detect, script, subtitle, translator, tts,
+    video,
 )
 from core.cue import Cue
 from providers.navy import NavyError
-from ui import settings_modal, style, track_selector, update_modal
+from ui import music_picker, settings_modal, style, track_selector, update_modal
 from utils.binaries import BinaryNotFound
 from utils.paths import resource_path
 
@@ -119,6 +120,14 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.btn_settings.pack(side="right")
 
+        self.btn_music = ctk.CTkButton(
+            self.top_frame, text="🎵", width=35,
+            command=self._open_music_picker,
+            fg_color="transparent", text_color="white",
+            hover_color=style.HOVER_SUBTLE, font=style.FONT_ICON,
+        )
+        self.btn_music.pack(side="right", padx=(0, 4))
+
         # Seletor de modelo — movido pro topo pra abrir espaço no rodapé
         self.btn_model_selector = ctk.CTkButton(
             self.top_frame, text=f"{self.selected_model}", command=self._toggle_model,
@@ -186,6 +195,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _on_settings_saved(self, new_cfg):
         self.cfg = new_cfg
         self.log("Configurações salvas.")
+
+    def _open_music_picker(self):
+        music_picker.open_music_picker(self, self.cfg, self._on_settings_saved)
 
     # ----------------------------------------------------------------- update
     def _check_update_async(self):
@@ -1071,6 +1083,10 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 model_id=model_id,
                 text=self.short_script_text,
                 output_dir=self.work_dir,
+                stability=self.cfg.get("tts_stability", 0.32),
+                similarity_boost=self.cfg.get("tts_similarity_boost", 0.30),
+                style=self.cfg.get("tts_style", 0.0),
+                use_speaker_boost=self.cfg.get("tts_use_speaker_boost", True),
             )
 
             # Pós-processamento: silence cut + speed change + ajuste do alignment
@@ -1183,7 +1199,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             # acerta cena específica de cada uma.
             beats = chunking.chunk_by_time(
                 self.last_narration.alignment,
-                target_seconds=1.5, soft_threshold=5.0, max_seconds=7.0,
+                target_seconds=1.5, soft_threshold=2.5, max_seconds=3.5,
             )
             self.is_loading = False
             self.after(0, self._clear_loading_line)
@@ -1463,18 +1479,33 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 binaries_dir=self.cfg.get("binaries_dir", ""),
             )
 
-            # 6. Captions word-by-word (fonte maior, outline mais grosso)
+            # 6. Captions word-by-word — posição vertical configurável no ⚙️
             captions_path = os.path.join(self.work_dir, "captions.ass")
             captions.generate_ass(
                 alignment=self.last_narration.alignment,
                 output_path=captions_path,
                 resolution=(1080, 1920),
                 fontsize=110, outline=7,
-                vertical_pct=0.78,
+                vertical_pct=self.cfg.get("captions_vertical_pct", 0.40),
             )
             self.after(0, self.log, "📝 Captions word-by-word geradas.")
 
-            # 7. Fase 3c: render final 9:16 + blur + burn captions + mux narração
+            # 7. Fase 3c: render final 9:16 + blur + burn captions + mux narração + (música)
+            # Resolve trilha sonora baseado no config: random/fixed/none
+            music_path = music.pick_for_render(
+                mode=self.cfg.get("music_mode", "random"),
+                fixed_track=self.cfg.get("music_fixed_track", ""),
+            )
+            if music_path:
+                from core.music import display_name
+                vol_db = self.cfg.get("music_volume_db", -20.0)
+                self.after(
+                    0, self.log,
+                    f"🎵 Trilha: {display_name(music_path)} ({vol_db:+.0f}dB)"
+                )
+            else:
+                self.after(0, self.log, "🎵 Sem trilha sonora.")
+
             self.after(0, self.log, "🎞️ Montando short final (9:16 + blur + captions)...")
             final_path = os.path.join(self.work_dir, "short_final.mp4")
             video.render_short(
@@ -1485,6 +1516,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 resolution=(1080, 1920),
                 fg_scale=1.50,   # 50% maior que a tela; corta ~17% de cada lateral
                 binaries_dir=self.cfg.get("binaries_dir", ""),
+                music_path=music_path,
+                music_volume_db=self.cfg.get("music_volume_db", -20.0),
             )
 
             size_mb = os.path.getsize(final_path) / (1024 * 1024)

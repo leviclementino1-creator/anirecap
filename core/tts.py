@@ -54,8 +54,19 @@ def synthesize(
     output_dir: str,
     base_name: str = "narration",
     timeout: float = 180.0,
+    stability: float = 0.32,
+    similarity_boost: float = 0.30,
+    style: float = 0.0,
+    use_speaker_boost: bool = True,
 ) -> TTSResult:
-    """Gera narração e grava `narration.mp3` + `narration.alignment.json` em `output_dir`."""
+    """Gera narração e grava `narration.mp3` + `narration.alignment.json` em `output_dir`.
+
+    voice_settings (passados no body):
+    - stability (0-1): baixo = expressivo/dramático, alto = monotônico
+    - similarity_boost (0-1): fidelidade à voz original
+    - style (0-1): exagero estilístico (só funciona em alguns modelos)
+    - use_speaker_boost: reforça similaridade
+    """
     if not api_key:
         raise TTSError("API key do ElevenLabs vazia")
     if not voice_id:
@@ -72,6 +83,12 @@ def synthesize(
     body = {
         "text": text,
         "model_id": model_id or "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": max(0.0, min(1.0, float(stability))),
+            "similarity_boost": max(0.0, min(1.0, float(similarity_boost))),
+            "style": max(0.0, min(1.0, float(style))),
+            "use_speaker_boost": bool(use_speaker_boost),
+        },
     }
 
     resp = requests.post(url, headers=headers, json=body, timeout=timeout)

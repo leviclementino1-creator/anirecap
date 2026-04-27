@@ -128,6 +128,144 @@ def open_settings(parent, current: dict, on_saved):
     )
     btn_clear_cache.pack(side="right")
 
+    # =================== Voice Settings (ElevenLabs) ===================
+    voice_section = ctk.CTkLabel(
+        container, text="🎙️ Voice Settings (ElevenLabs)",
+        font=style.FONT_LABEL,
+    )
+    voice_section.pack(anchor="w", pady=(16, 4))
+
+    voice_hint = ctk.CTkLabel(
+        container,
+        text="stability baixo = mais expressivo · similarity alta = fiel à voz · "
+             "style > 0 = drama exagerado",
+        font=("Inter", 10), text_color="gray", justify="left",
+        wraplength=420,
+    )
+    voice_hint.pack(anchor="w", pady=(0, 8))
+
+    def _add_slider(label_text: str, key: str, default: float):
+        """Slider 0-100 (representa percentual). Internamente salva 0.0-1.0."""
+        initial_pct = int(round(float(current.get(key, default)) * 100))
+        initial_pct = max(0, min(100, initial_pct))
+
+        row = ctk.CTkFrame(container, fg_color="transparent")
+        row.pack(fill="x", pady=(4, 0))
+
+        lbl = ctk.CTkLabel(row, text=label_text, font=style.FONT_SMALL, width=180, anchor="w")
+        lbl.pack(side="left")
+
+        value_lbl = ctk.CTkLabel(row, text=f"{initial_pct}%", font=style.FONT_SMALL, width=40)
+        value_lbl.pack(side="right")
+
+        var = ctk.IntVar(value=initial_pct)
+
+        def _on_change(v):
+            value_lbl.configure(text=f"{int(float(v))}%")
+
+        slider = ctk.CTkSlider(
+            row, from_=0, to=100, variable=var, command=_on_change,
+            number_of_steps=100,
+        )
+        slider.pack(side="left", fill="x", expand=True, padx=8)
+        return var
+
+    var_stability = _add_slider("Stability", "tts_stability", 0.32)
+    var_similarity = _add_slider("Similarity Boost", "tts_similarity_boost", 0.30)
+    var_style = _add_slider("Style Exaggeration", "tts_style", 0.0)
+
+    switch_speaker_boost_var = ctk.BooleanVar(
+        value=bool(current.get("tts_use_speaker_boost", True))
+    )
+    switch_speaker_boost = ctk.CTkSwitch(
+        container,
+        text="Speaker Boost (reforça similaridade)",
+        variable=switch_speaker_boost_var,
+        font=style.FONT_LABEL,
+    )
+    switch_speaker_boost.pack(anchor="w", pady=(8, 4))
+
+    # =================== Música de fundo ===================
+    music_section = ctk.CTkLabel(
+        container, text="🎵 Trilha sonora (música de fundo)",
+        font=style.FONT_LABEL,
+    )
+    music_section.pack(anchor="w", pady=(16, 4))
+
+    music_hint = ctk.CTkLabel(
+        container,
+        text="Volume em dB (escala logarítmica natural pra mixagem):\n"
+             "  0dB = sem atenuar · -20dB = ao fundo (default) · -40dB = quase mudo\n"
+             "Pra escolher música/modo aleatório use o botão 🎵 no topo.",
+        font=("Inter", 10), text_color="gray", justify="left",
+        wraplength=420,
+    )
+    music_hint.pack(anchor="w", pady=(0, 8))
+
+    # Slider de volume em dB: -40 (quase mudo) até 0 (sem atenuar)
+    initial_db = int(round(float(current.get("music_volume_db", -20.0))))
+    initial_db = max(-40, min(0, initial_db))
+
+    music_row = ctk.CTkFrame(container, fg_color="transparent")
+    music_row.pack(fill="x", pady=(4, 0))
+
+    lbl = ctk.CTkLabel(music_row, text="Volume música", font=style.FONT_SMALL, width=180, anchor="w")
+    lbl.pack(side="left")
+
+    music_value_lbl = ctk.CTkLabel(music_row, text=f"{initial_db:+d}dB", font=style.FONT_SMALL, width=50)
+    music_value_lbl.pack(side="right")
+
+    var_music_db = ctk.IntVar(value=initial_db)
+
+    def _on_music_change(v):
+        db_val = int(float(v))
+        music_value_lbl.configure(text=f"{db_val:+d}dB")
+
+    music_slider = ctk.CTkSlider(
+        music_row, from_=-40, to=0, variable=var_music_db, command=_on_music_change,
+        number_of_steps=40,
+    )
+    music_slider.pack(side="left", fill="x", expand=True, padx=8)
+
+    # =================== Posição das captions ===================
+    captions_section = ctk.CTkLabel(
+        container, text="📝 Captions (posição vertical)",
+        font=style.FONT_LABEL,
+    )
+    captions_section.pack(anchor="w", pady=(16, 4))
+
+    captions_hint = ctk.CTkLabel(
+        container,
+        text="0% = topo da tela · 30% = acima do vídeo · 50% = centro · 75% = embaixo",
+        font=("Inter", 10), text_color="gray", justify="left",
+        wraplength=420,
+    )
+    captions_hint.pack(anchor="w", pady=(0, 8))
+
+    initial_cap_pct = int(round(float(current.get("captions_vertical_pct", 0.40)) * 100))
+    initial_cap_pct = max(10, min(90, initial_cap_pct))
+
+    cap_row = ctk.CTkFrame(container, fg_color="transparent")
+    cap_row.pack(fill="x", pady=(4, 0))
+
+    cap_lbl = ctk.CTkLabel(cap_row, text="Posição vertical", font=style.FONT_SMALL, width=180, anchor="w")
+    cap_lbl.pack(side="left")
+
+    cap_value_lbl = ctk.CTkLabel(cap_row, text=f"{initial_cap_pct}%", font=style.FONT_SMALL, width=50)
+    cap_value_lbl.pack(side="right")
+
+    var_cap_pct = ctk.IntVar(value=initial_cap_pct)
+
+    def _on_cap_change(v):
+        cap_value_lbl.configure(text=f"{int(float(v))}%")
+
+    cap_slider = ctk.CTkSlider(
+        cap_row, from_=10, to=90, variable=var_cap_pct, command=_on_cap_change,
+        number_of_steps=80,
+    )
+    cap_slider.pack(side="left", fill="x", expand=True, padx=8)
+
+    # =================== Outras configs ===================
     entry_bin = add_field(
         "Pasta dos binários (fallback — opcional)",
         current.get("binaries_dir", ""),
@@ -157,6 +295,15 @@ def open_settings(parent, current: dict, on_saved):
             "elevenlabs_model_id": entry_el_model.get().strip() or config.DEFAULT_ELEVENLABS_MODEL,
             "tts_speed": speed,
             "tts_silence_cut": bool(switch_silence_var.get()),
+            # Voice settings — sliders salvam em 0-100, persiste como 0.0-1.0
+            "tts_stability": var_stability.get() / 100.0,
+            "tts_similarity_boost": var_similarity.get() / 100.0,
+            "tts_style": var_style.get() / 100.0,
+            "tts_use_speaker_boost": bool(switch_speaker_boost_var.get()),
+            # Música — volume em dB (-40 até 0)
+            "music_volume_db": float(var_music_db.get()),
+            # Captions — posição vertical (10-90% → 0.10-0.90)
+            "captions_vertical_pct": var_cap_pct.get() / 100.0,
             "use_cache": bool(switch_cache_var.get()),
             "binaries_dir": entry_bin.get().strip(),
         })

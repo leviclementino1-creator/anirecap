@@ -4,9 +4,10 @@ Pipeline:
 1. `cut_clips` → pra cada match no plano, ffmpeg extrai um mp4 silencioso
 2. `render_short` → concat + 9:16 com blur background + burn subtitles + mux narração
 """
+import math
 import os
 import subprocess
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from core.matcher import SceneMatch
 from utils.binaries import find_binary
@@ -79,12 +80,26 @@ def render_short(
     resolution: Tuple[int, int] = (1080, 1920),
     fg_scale: float = 1.15,          # 1.0 = largura da tela; 1.15 = 15% maior (corta as bordas do anime)
     binaries_dir: str = "",
+    music_path: Optional[str] = None,
+    music_volume_db: float = -20.0,
 ) -> str:
     """Monta o short final: concat de clipes + 9:16 com blur bg + burn captions + narração.
 
     `fg_scale`: largura do vídeo central em múltiplos da largura da tela.
     1.0 = caber 100%, 1.15 = 15% maior (crop lateral leve). Maior = fica mais
     ocupando a tela; menor = mais blur visível.
+
+    `music_path`: trilha sonora opcional. Se fornecido, mixa com a narração:
+    - narração principal em volume natural
+    - música atenuada em `music_volume_db` (default -20dB ≈ 10% do volume linear)
+    - escala dB é logarítmica e bate com como o ouvido percebe volume:
+        0dB   = sem atenuar (música no nível original)
+       -6dB  = metade da percepção
+       -12dB = 1/4
+       -20dB = bem ao fundo (default)
+       -40dB = quase mudo
+    - música é loopada com `-stream_loop -1` se for mais curta que o vídeo
+    - corte automático no fim do vídeo via `-shortest`
     """
     ffmpeg = find_binary("ffmpeg", binaries_dir)
     w, h = resolution
@@ -103,7 +118,7 @@ def render_short(
     fg_w = int(round(w * fg_scale))
     # Overlay é centralizado — (W-w)/2 é negativo quando fg > tela, resultando
     # em crop lateral simétrico.
-    filter_complex = (
+    video_chain = (
         f"[0:v]split=2[fg_src][bg_src];"
         f"[bg_src]scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h},boxblur=luma_radius=20:luma_power=3[bg];"
@@ -112,13 +127,44 @@ def render_short(
         f"[vid]subtitles={captions_rel}[out]"
     )
 
+    # Monta comando ffmpeg base
     cmd = [
         ffmpeg, "-y",
-        "-f", "concat", "-safe", "0", "-i", concat_list,
-        "-i", narration_path,
+        "-f", "concat", "-safe", "0", "-i", concat_list,   # 0: vídeo concat
+        "-i", narration_path,                              # 1: narração
+    ]
+
+    # Se tem música, adiciona como input 2 com loop infinito
+    has_music = music_path and os.path.isfile(music_path)
+    if has_music:
+        # `-stream_loop -1` repete o áudio infinitamente; `-shortest` corta no fim do vídeo
+        cmd += ["-stream_loop", "-1", "-i", os.path.abspath(music_path)]
+
+    # Filter complex: vídeo (sempre) + áudio mixado se há música
+    if has_music:
+        # Cap em -40dB (mínimo) e 0dB (máximo, sem atenuar)
+        db = max(-40.0, min(0.0, float(music_volume_db)))
+        # Conversão dB → linear: 10^(dB/20). Ex: -20dB = 0.10
+        linear = 10.0 ** (db / 20.0)
+        # `amix` por padrão DIVIDE o volume final pelo número de inputs
+        # (com 2 inputs → narração cai 50%). Usa `normalize=0` pra desligar
+        # essa normalização e mantém a narração no nível original.
+        audio_chain = (
+            f";[1:a]volume=1.0[narr];"
+            f"[2:a]volume={linear:.4f}[music];"
+            f"[narr][music]amix=inputs=2:duration=first:"
+            f"dropout_transition=0:normalize=0[audio]"
+        )
+        filter_complex = video_chain + audio_chain
+        audio_map = "[audio]"
+    else:
+        filter_complex = video_chain
+        audio_map = "1:a"
+
+    cmd += [
         "-filter_complex", filter_complex,
         "-map", "[out]",
-        "-map", "1:a",
+        "-map", audio_map,
         "-c:v", "libx264", "-crf", "18", "-preset", "medium",
         "-c:a", "aac", "-b:a", "192k",
         "-pix_fmt", "yuv420p",

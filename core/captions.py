@@ -106,13 +106,16 @@ def generate_ass(
     resolution: Tuple[int, int] = (1080, 1920),
     fontsize: int = 78,
     outline: int = 5,
-    vertical_pct: float = 0.78,
+    vertical_pct: float = 0.68,
     hold_last_extra: float = 0.4,
+    uppercase: bool = True,
 ) -> str:
     """Gera captions word-by-word. Cada palavra dura até a próxima começar.
 
-    - `vertical_pct=0.78` → posição vertical a 78% da altura (zona de short)
+    - `vertical_pct=0.68` → posição vertical a 68% da altura (entre o vídeo
+      central e o blur de baixo, como TikTok)
     - `fontsize=78`, `outline=5` → Arial Black branco com borda preta grossa
+    - `uppercase=True` → ALL CAPS estilo viral
     """
     w, h = resolution
     margin_v = max(0, int(h * (1.0 - vertical_pct)))
@@ -135,6 +138,8 @@ def generate_ass(
         safe = _clean_caption_text(safe)
         if not safe:
             continue
+        if uppercase:
+            safe = safe.upper()
         lines.append(
             f"Dialogue: 0,{_time_to_ass(start)},{_time_to_ass(display_end)},"
             f"Default,,0,0,0,,{safe}"

@@ -35,6 +35,22 @@ _DEFAULTS = {
     # Pós-processamento do TTS
     "tts_speed": 1.0,         # fator atempo; 1.0 = normal, 1.2 = mais rápido
     "tts_silence_cut": True,  # cortar pausas longas
+    # Voice settings do ElevenLabs (passados no body de /text-to-speech).
+    # stability: baixo = mais expressivo/dramático; alto = monotônico
+    # similarity_boost: alto = mais fiel à voz original
+    # style: exagero estilístico (0.0 = neutro, > 0 = mais drama)
+    # use_speaker_boost: reforça similaridade com a voz original
+    "tts_stability": 0.32,
+    "tts_similarity_boost": 0.30,
+    "tts_style": 0.0,
+    "tts_use_speaker_boost": True,
+    # Trilha sonora de fundo (pasta `music/` ao lado do app)
+    "music_mode": "random",        # "random" / "fixed" / "none"
+    "music_fixed_track": "",       # filename quando mode="fixed"
+    "music_volume_db": -20.0,      # atenuação em dB (-40 = quase mudo, 0 = sem atenuar)
+    # Posição vertical das captions (0.0 = topo, 1.0 = base)
+    # 0.30 = acima do vídeo central, 0.50 = no meio do vídeo, 0.78 = em baixo
+    "captions_vertical_pct": 0.40,
     # Cache em disco (economiza tokens em testes repetidos)
     "use_cache": False,
 }
