@@ -204,6 +204,37 @@ def build_canonical_mapping(
     return out
 
 
+# Palavras iniciais que SINALIZAM nome composto legítimo (não é "primeiro nome").
+# Ex: "The Book Selling Witch" deve ficar inteiro; "Mr. Nolnoa" também.
+_COMPOUND_NAME_PREFIXES = {
+    "the", "a", "an",
+    "le", "la", "les", "el", "los", "las", "os", "o",
+    "mr", "mr.", "mrs", "mrs.", "ms", "ms.",
+    "sr", "sr.", "sra", "sra.",
+    "dr", "dr.", "lord", "lady", "sir", "miss",
+}
+
+
+def _short_form(canonical: str) -> str:
+    """Devolve forma curta do nome canônico pra usar em substituições.
+
+    - "Agott Arkrome" → "Agott" (primeiro nome — nome próprio)
+    - "Qifrey" → "Qifrey" (já é simples)
+    - "The Book Selling Witch" → "The Book Selling Witch" (composto, preserva)
+    - "Mr. Nolnoa" → "Mr. Nolnoa" (honorífico, preserva)
+
+    Heurística: se o canônico tem 2+ palavras E a 1ª palavra é honorífico/artigo,
+    preserva o nome completo. Senão usa só o 1º nome (mais natural na fala).
+    """
+    parts = canonical.split()
+    if len(parts) <= 1:
+        return canonical
+    first_lower = parts[0].lower().rstrip(",.;:")
+    if first_lower in _COMPOUND_NAME_PREFIXES:
+        return canonical
+    return parts[0]
+
+
 def apply_mapping_to_text(
     text: str,
     mapping: Dict[str, str],
@@ -212,6 +243,10 @@ def apply_mapping_to_text(
 
     Case-insensitive. Word-boundary aware (não vai virar "QifreyKieffrey"
     e nem alterar substring no meio de outra palavra).
+
+    Aplica `_short_form()` no valor — "Agott Arkrome" vira "Agott" pra
+    soar natural na narração. Nomes compostos legítimos (artigo/honorífico)
+    são preservados.
     """
     if not text or not mapping:
         return text
@@ -221,7 +256,7 @@ def apply_mapping_to_text(
     keys = sorted(mapping.keys(), key=lambda s: -len(s))
 
     for k in keys:
-        v = mapping[k]
+        v = _short_form(mapping[k])
         # Pattern case-insensitive com word boundary
         pattern = re.compile(r"\b" + re.escape(k) + r"\b", flags=re.IGNORECASE)
         text = pattern.sub(v, text)

@@ -70,10 +70,15 @@ def chunk_by_time(
             ))
 
     last_space_idx = None  # última quebra de palavra (pra corte forçado)
+    last_punct_idx = None  # última pontuação SOFT/HARD vista
+    last_punct_time = None
 
     for i, c in enumerate(chars):
         if c == ' ':
             last_space_idx = i
+        if c in _HARD_PUNCT or c in _SOFT_PUNCT:
+            last_punct_idx = i
+            last_punct_time = ends[i]
 
         elapsed = ends[i] - block_start_time
         should_break = False
@@ -85,8 +90,20 @@ def chunk_by_time(
         elif elapsed >= soft_threshold and c in _SOFT_PUNCT:
             should_break = True
         elif elapsed >= max_seconds:
-            # Último recurso: força corte na última palavra antes do limite
-            if last_space_idx is not None and last_space_idx > block_start_idx:
+            # Atingiu o limite duro. Em vez de cortar mecânico no espaço
+            # (no meio de uma ideia tipo "...visão bizarra | da Bruxa..."),
+            # PREFERE retroceder pra última pontuação SOFT/HARD já vista —
+            # se ela criou um beat com elapsed >= target_seconds. Beat fica
+            # mais curto mas semanticamente íntegro.
+            if (
+                last_punct_idx is not None
+                and last_punct_idx > block_start_idx
+                and (last_punct_time - block_start_time) >= target_seconds
+            ):
+                break_idx = last_punct_idx
+                break_time = last_punct_time
+            elif last_space_idx is not None and last_space_idx > block_start_idx:
+                # Sem pontuação utilizável: fallback pra última palavra
                 break_idx = last_space_idx - 1
                 break_time = ends[break_idx] if break_idx >= 0 else ends[i]
             should_break = True
@@ -97,6 +114,8 @@ def chunk_by_time(
                 block_start_idx = break_idx + 1
                 block_start_time = starts[break_idx + 1]
                 last_space_idx = None
+                last_punct_idx = None
+                last_punct_time = None
             else:
                 block_start_idx = len(chars)
                 break
