@@ -14,6 +14,18 @@ from core.tts import Alignment
 _HARD_PUNCT = set(".!?:")
 _SOFT_PUNCT = set(",;—…")
 
+# Conjunções coordenativas: vírgula + uma dessas indica nova clausula com
+# sujeito/ação distinta ("Qifrey aparece, E a Tetia quebra o selo").
+# Tratada como HARD (quebra após target, sem esperar soft_threshold).
+_COORDINATING_CONJUNCTIONS = (" e ", " mas ", " ou ", " porém ", " contudo ", " entretanto ", " todavia ")
+
+
+def _is_coordinating_after(chars, i: int) -> bool:
+    """True se logo após chars[i] (uma vírgula) vem uma conjunção coordenativa."""
+    # Olha os próximos 12 chars (cobre " entretanto " que é a maior)
+    rest = ''.join(chars[i + 1:i + 13]).lower()
+    return any(rest.startswith(conj) for conj in _COORDINATING_CONJUNCTIONS)
+
 
 @dataclass
 class NarrationBeat:
@@ -86,6 +98,14 @@ def chunk_by_time(
         break_time = ends[i]
 
         if elapsed >= target_seconds and c in _HARD_PUNCT:
+            should_break = True
+        elif (
+            elapsed >= target_seconds
+            and c == ','
+            and _is_coordinating_after(chars, i)
+        ):
+            # Vírgula + conjunção coordenativa = mudança de cláusula
+            # ("X, e Y" = duas ações). Quebra mesmo sem soft_threshold.
             should_break = True
         elif elapsed >= soft_threshold and c in _SOFT_PUNCT:
             should_break = True
