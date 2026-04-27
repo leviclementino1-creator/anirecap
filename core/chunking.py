@@ -48,18 +48,23 @@ def chunk_by_time(
     target_seconds: float = 2.0,
     soft_threshold: float = 3.0,
     max_seconds: float = 4.5,
+    min_hard_break: float = 1.0,
 ) -> List[NarrationBeat]:
     """Quebra priorizando pontuação FORTE (fim de sentença/preâmbulo) sobre
     FRACA (pausas) pra evitar cortes no meio da ideia.
 
     Hierarquia:
-    - Elapsed < target_seconds          → nunca quebra
-    - target ≤ elapsed < soft_threshold → quebra SÓ em HARD (. ! ? :)
-    - soft_threshold ≤ elapsed < max    → aceita também SOFT (, ; — …)
-    - elapsed ≥ max_seconds             → força quebra no último espaço
+    - Elapsed < min_hard_break            → nunca quebra (evita beat <1s)
+    - min_hard_break ≤ elapsed < target   → quebra SÓ em HARD (. ! ? :)
+    - target ≤ elapsed < soft_threshold   → idem (HARD)
+    - virgula + conjunção coordenativa     → quebra (clausula coordenada)
+    - soft_threshold ≤ elapsed < max      → aceita também SOFT (, ; — …)
+    - elapsed ≥ max_seconds               → retrocede pra última pontuação
 
-    Com isso "Takuya pede que, se ele ganhar, ela o abrace." vira 1 beat só,
-    porque ignora as vírgulas do meio e espera o ponto final.
+    Com isso "Takuya pede que, se ele ganhar, ela o abrace." vira 1 beat só
+    (ignora vírgulas internas, espera o ponto final). Mas "mas Qifrey salva
+    a Agott. E é nesse momento que..." quebra logo em "Agott." (1.14s ≥ 1.0)
+    pra deixar cada frase em seu beat.
     """
     chars = alignment.characters
     starts = alignment.starts
@@ -97,7 +102,7 @@ def chunk_by_time(
         break_idx = i
         break_time = ends[i]
 
-        if elapsed >= target_seconds and c in _HARD_PUNCT:
+        if elapsed >= min_hard_break and c in _HARD_PUNCT:
             should_break = True
         elif (
             elapsed >= target_seconds
