@@ -205,13 +205,12 @@ def pick_subclips(
     if beat_duration <= 0:
         return [(cue_start, beat_duration)]
 
-    # === ESTRATÉGIA 1: beat até 1.5x target + cena cabe inteira → single-cut ===
-    # Se a cena onde cue_start está cobre o beat (com snap pra trás se preciso),
-    # devolve um único sub-clipe sem precisar dividir. Threshold ampliado pra
-    # 1.5x target (default 3.0s) pra cobrir beats médios também — evita
-    # multi-cut desnecessário quando uma cena natural cabe tudo.
-    single_cut_threshold = target_subclip_duration * 1.5
-    if scenes and beat_duration <= single_cut_threshold:
+    # === ESTRATÉGIA 1: beat até 1.5x target → tenta single-cut ===
+    # Threshold conservador: só beats curtos. Snap pra trás em cena anterior
+    # longa pode pegar conteúdo narrativamente errado (cena anterior pode ser
+    # outra parte do episódio).
+    base_threshold = target_subclip_duration * 1.5
+    if scenes and beat_duration <= base_threshold:
         cur_scene_start = max(
             (s for s in scenes if s <= cue_start), default=0.0
         )
@@ -241,10 +240,21 @@ def pick_subclips(
             return [(new_start, beat_duration)]
 
     # === ESTRATÉGIA 2: distribuição equilibrada entre N cenas ===
+    # Janela de contexto: estende até a próxima scene change após o
+    # `desired_end` pra que a última cena viável termine numa boundary
+    # natural (sem flash), com cap pra não pegar cenas longe do cue
+    # (fora do contexto narrativo).
     win_start = max(0.0, cue_start)
-    win_end = cue_end + context_pad_after
-    if win_end < win_start + beat_duration + 2.0:
-        win_end = win_start + beat_duration + 2.0
+    desired_end = win_start + beat_duration + SAFETY
+    next_sc_after_desired = next(
+        (s for s in scenes if s > desired_end), float("inf")
+    )
+    # Cap absoluto: 2x beat_duration + 1s — limita quanto a janela pode
+    # estender pra evitar incluir cenas narrativamente fora do contexto.
+    max_win_end = win_start + beat_duration * 2.0 + 1.0
+    win_end = min(next_sc_after_desired, max_win_end)
+    if win_end < desired_end:
+        win_end = desired_end
 
     scene_set = set(scenes)
     boundaries = sorted(set(
