@@ -51,15 +51,30 @@ def cut_clips(
 
     paths: List[str] = []
     last_scene_start: Optional[float] = None  # cena onde o beat anterior TERMINOU
+    prev_video_start: Optional[float] = None  # range temporal do beat anterior
+    prev_video_end: Optional[float] = None
     for i, m in enumerate(plan):
         out = os.path.join(out_dir, f"clip_{i:03d}.mp4")
 
         # Sub-clipes começam em m.video_start (posição que o matcher escolheu),
         # NÃO em m.cue.start — quando matcher snappou, video_start é o ponto bom.
         cue_start = m.video_start
+
+        # OVERLAP GUARD: se este beat sobrepõe TEMPORALMENTE com o anterior
+        # (matcher escolheu cenas próximas pra duas metades de uma frase
+        # quebrada), desloca cue_start pra fim_do_anterior + small gap.
+        # Só ativa quando há overlap real (não em saltos temporais — se o
+        # beat anterior estava em 1390 e este em 22, são cenas independentes).
+        if (
+            prev_video_start is not None
+            and prev_video_end is not None
+            and prev_video_start <= cue_start <= prev_video_end
+        ):
+            cue_start = prev_video_end + 0.1
+
         cue_end = max(
             m.video_end,
-            m.cue.end if m.cue else (m.video_start + m.beat.duration),
+            m.cue.end if m.cue else (cue_start + m.beat.duration),
         )
         subclips = pick_subclips(
             cue_start=cue_start,
@@ -74,6 +89,10 @@ def cut_clips(
         if subclips:
             last_sub_start = subclips[-1][0]
             last_scene_start = _scene_start_of(last_sub_start)
+            first_start = subclips[0][0]
+            last_end = subclips[-1][0] + subclips[-1][1]
+            prev_video_start = first_start
+            prev_video_end = last_end
 
         if len(subclips) == 1:
             # === SINGLE-CUT (modo simples) ===

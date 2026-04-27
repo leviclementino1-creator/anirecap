@@ -205,11 +205,13 @@ def pick_subclips(
     if beat_duration <= 0:
         return [(cue_start, beat_duration)]
 
-    # === ESTRATÉGIA 1: beat até 1.5x target → tenta single-cut ===
-    # Threshold conservador: só beats curtos. Snap pra trás em cena anterior
-    # longa pode pegar conteúdo narrativamente errado (cena anterior pode ser
-    # outra parte do episódio).
-    base_threshold = target_subclip_duration * 1.5
+    # === ESTRATÉGIA 1: beat até 2x target → tenta single-cut ===
+    # Threshold ampliado pra cobrir beats médios (até 4s default). Snap pra
+    # trás é seguro DESDE QUE cue_start esteja a ≥ 0.5s do próximo scene
+    # change — evita pegar conteúdo da cena ANTERIOR quando o matcher snappou
+    # pro fim de uma cena (caso "Qifrey explica" antes de "Coco pratica").
+    base_threshold = target_subclip_duration * 2.0
+    MIN_GAP_TO_NEXT_SCENE = 0.5
     if scenes and beat_duration <= base_threshold:
         cur_scene_start = max(
             (s for s in scenes if s <= cue_start), default=0.0
@@ -232,8 +234,14 @@ def pick_subclips(
             ):
                 return [(cue_start + GHOST_GUARD, beat_duration)]
             return [(cue_start, beat_duration)]
-        if cena_total >= beat_duration + GHOST_GUARD + SAFETY:
-            # Snappa pra trás dentro da MESMA cena
+        if (
+            cena_total >= beat_duration + GHOST_GUARD + SAFETY
+            and cena_room_from_cue >= MIN_GAP_TO_NEXT_SCENE
+        ):
+            # Snappa pra trás dentro da MESMA cena. Só se cue_start está
+            # a ≥ 0.5s do próximo scene change — senão a "cena atual" do
+            # algoritmo é a cena ANTERIOR (cue está no fim dela), e snap
+            # pra trás mostraria conteúdo narrativamente errado.
             deficit = (beat_duration + SAFETY) - cena_room_from_cue
             min_floor = cur_scene_start + GHOST_GUARD
             new_start = max(min_floor, cue_start - deficit)
