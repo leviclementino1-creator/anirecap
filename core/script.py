@@ -14,7 +14,7 @@ from providers import navy
 # literal. Bumpar SEMPRE que a mudança no prompt deve invalidar resultados
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
-SUMMARY_PROMPT_VERSION = "summary-v2-2025-04-23"
+SUMMARY_PROMPT_VERSION = "summary-v3-fidelidade-pronomes-2026-04-28"
 SHORT_SCRIPT_PROMPT_VERSION = "short-v4-mae-vitima-explicita-2026-04-28"
 
 
@@ -35,6 +35,25 @@ REGRAS:
 - Preserve detalhes que permitam recontar a história com graça depois.
 - Linguagem clara e descritiva — NÃO estilo viral, NÃO estilo shorts.
 - Tamanho alvo: 300 a 500 palavras.
+
+REGRAS DE FIDELIDADE FACTUAL (CRÍTICO):
+- NÃO INVENTE descrições físicas de ações que não estão claramente
+  no transcript. Se um personagem usa "som como arma", descreva como
+  "ataca com ondas sonoras" — NÃO escreva "carregou a vítima pelas
+  orelhas" se isso não está literalmente no transcript.
+- Se uma habilidade é abstrata/metafórica (som, magia, telepatia),
+  preserve a abstração. Não force interpretação física literal.
+- DESAMBIGUE PRONOMES quando há mais de um sujeito feminino/masculino
+  na sentença. Em vez de "sua irmã mais velha" use "a irmã mais velha
+  DELE/DELA" ou repita o nome ("a irmã mais velha do Mitsuhiko").
+  Exemplo: "Mitsuhiko contratou Gero para proteger Shiori de Futae,
+  irmã mais velha do Mitsuhiko" (NÃO "irmã mais velha de Shiori" se
+  Futae é tia da Shiori).
+- Quando o relacionamento entre personagens estiver pouco claro no
+  transcript, OMITA em vez de inventar (não diga "irmã" sem ter
+  certeza; diga "Futae, que quer a empresa" sem rotular relação).
+- Para CADA afirmação que você escreve, deveria conseguir apontar
+  uma linha do transcript que sustenta. Na dúvida, OMITA.
 
 TRANSCRIÇÃO:
 """
