@@ -21,12 +21,15 @@ import shutil as _shutil
 
 from core import (
     ad_transcribe, anilist, audio_post, cache, captions, chunking, matcher,
-    mkv, music, name_mapper, scene_detect, script, subtitle, translator, tts,
-    video,
+    metadata as core_metadata, mkv, music, name_mapper, scene_detect, script,
+    subtitle, translator, tts, video,
 )
 from core.cue import Cue
 from providers.navy import NavyError
-from ui import music_picker, settings_modal, style, track_selector, update_modal
+from ui import (
+    metadata_modal, music_picker, settings_modal, style, track_selector,
+    update_modal,
+)
 from utils.binaries import BinaryNotFound
 from utils.paths import resource_path
 
@@ -180,6 +183,13 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             font=style.FONT_BTN_SECONDARY, width=95, height=32, state="disabled",
         )
         self.btn_plano.place(relx=0.54, rely=0.96, anchor="sw")
+
+        self.btn_meta = ctk.CTkButton(
+            self, text="📋 Meta", command=self._generate_metadata,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_BTN_SECONDARY, width=85, height=32, state="disabled",
+        )
+        self.btn_meta.place(relx=0.71, rely=0.96, anchor="sw")
 
         self.btn_clear = ctk.CTkButton(
             self, text="Limpar", command=self._clear_data,
@@ -634,6 +644,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_short.configure(state="disabled")
         self.btn_tts.configure(state="disabled")
         self.btn_plano.configure(state="disabled")
+        self.btn_meta.configure(state="disabled")
 
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
@@ -657,6 +668,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_ai.configure(state="disabled")
         self.btn_short.configure(state="disabled")
         self.btn_tts.configure(state="disabled")
+        self.btn_meta.configure(state="disabled")
         self.btn_clear.configure(state="disabled")
         self.loading_label = "Resumindo episódio"
         self.is_loading = True
@@ -777,6 +789,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_ai.configure(state="disabled")
         self.btn_short.configure(state="disabled")
         self.btn_tts.configure(state="disabled")
+        self.btn_meta.configure(state="disabled")
         self.btn_clear.configure(state="disabled")
         self.loading_label = "Condensando em roteiro short"
         self.is_loading = True
@@ -801,6 +814,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     self.short_script_text = text
                     self.after(0, self.log, "📝 Override carregado. Clique em 🎙️ Narração.")
                     self.after(0, lambda: self.btn_tts.configure(state="normal"))
+                    self.after(0, lambda: self.btn_meta.configure(state="normal"))
                     self.after(0, lambda: self.btn_ai.configure(state="normal"))
                     self.after(0, lambda: self.btn_short.configure(state="normal"))
                     self.after(0, lambda: self.btn_clear.configure(state="normal"))
@@ -828,6 +842,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     self.short_script_text = cached.strip()
                     self.after(0, self.log, "Clique em 🎙️ Narração.")
                     self.after(0, lambda: self.btn_tts.configure(state="normal"))
+                    self.after(0, lambda: self.btn_meta.configure(state="normal"))
                     return
 
             full = ""
@@ -900,6 +915,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 cache.set_llm(cache_parts, self.short_script_text)
             self.after(0, self.log, "📝 Roteiro short pronto. Clique em 🎙️ Narração.")
             self.after(0, lambda: self.btn_tts.configure(state="normal"))
+            self.after(0, lambda: self.btn_meta.configure(state="normal"))
         except NavyError as e:
             self._handle_llm_error(e)
         except Exception as e:
@@ -1161,6 +1177,47 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda: self.btn_clear.configure(state="normal"))
 
     # ------------------------------------------------ Plano de cortes (Fase 3a)
+    # -------------------------------------------------------- LLM: títulos+desc
+    def _generate_metadata(self):
+        if not self.short_script_text.strip():
+            self.log("[ERRO] Gere o roteiro primeiro (📝 Short).")
+            return
+        if not self.cfg.get("navy_api_key"):
+            self.log("[ERRO] Configure a Navy API key em ⚙️")
+            return
+
+        self.btn_meta.configure(state="disabled")
+        self.loading_label = "Gerando títulos e descrição"
+        self.is_loading = True
+        self._update_loading_animation()
+        threading.Thread(target=self._call_metadata, daemon=True).start()
+
+    def _call_metadata(self):
+        try:
+            self.after(0, self.log, "📋 Pedindo títulos + descrição ao LLM...")
+            md = core_metadata.generate_metadata(
+                short_script=self.short_script_text,
+                api_key=self.cfg["navy_api_key"],
+                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                model=self.selected_model,
+            )
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"📋 {len(md.titles)} títulos prontos.")
+            self.after(0, lambda: metadata_modal.open_metadata_modal(
+                self, md.titles, md.description,
+            ))
+        except NavyError as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self._handle_llm_error(e)
+        except Exception as e:
+            self.is_loading = False
+            self.after(0, self._clear_loading_line)
+            self.after(0, self.log, f"[ERRO META]: {str(e)}")
+        finally:
+            self.after(0, lambda: self.btn_meta.configure(state="normal"))
+
     def _generate_plan(self):
         if not self.last_narration:
             self.log("[ERRO] Gere a narração primeiro.")
