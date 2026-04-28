@@ -15,6 +15,12 @@ from utils.binaries import find_binary
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+# fps fixo dos clipes — garante que cada clipe tem `round(dur * fps)` frames
+# exatos. Sem isso, o encoder pode encerrar em keyframe diferente do `-t`,
+# causando drift de centenas de ms ao longo de 25+ clipes (= captions
+# dessincronizadas).
+TARGET_FPS = 30
+
 
 def cut_clips(
     mkv_path: str,
@@ -103,12 +109,18 @@ def cut_clips(
             target_start = max(0.0, sub_start)
             rough_seek = max(0.0, target_start - 5.0)
             fine_seek = target_start - rough_seek
+            # Calcula nb_frames pra duração EXATA. `-frames:v N` corta o
+            # output em N frames; combinado com `-r TARGET_FPS` cada clipe
+            # dura exatamente N/TARGET_FPS segundos.
+            nb_frames = max(1, round(sub_dur * TARGET_FPS))
             cmd = [
                 ffmpeg, "-y",
                 "-ss", f"{rough_seek:.3f}",
                 "-i", mkv_path,
                 "-ss", f"{fine_seek:.3f}",
-                "-t", f"{sub_dur:.3f}",
+                "-frames:v", str(nb_frames),
+                "-r", str(TARGET_FPS),
+                "-vsync", "cfr",
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
@@ -130,11 +142,14 @@ def cut_clips(
                     f"setpts=PTS-STARTPTS[v{j}]"
                 )
                 concat_inputs.append(f"[v{j}]")
+            # Total de frames esperado = soma dos nb_frames dos sub-clipes
+            total_dur = sum(d for _, d in subclips)
+            nb_frames = max(1, round(total_dur * TARGET_FPS))
             filter_str = (
                 ";".join(trim_filters)
                 + ";"
                 + "".join(concat_inputs)
-                + f"concat=n={len(subclips)}:v=1:a=0[out]"
+                + f"concat=n={len(subclips)}:v=1:a=0,fps={TARGET_FPS}[out]"
             )
             cmd = [
                 ffmpeg, "-y",
@@ -142,6 +157,8 @@ def cut_clips(
                 "-i", mkv_path,
                 "-filter_complex", filter_str,
                 "-map", "[out]",
+                "-frames:v", str(nb_frames),
+                "-vsync", "cfr",
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
