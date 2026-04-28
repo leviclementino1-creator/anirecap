@@ -133,6 +133,10 @@ _RELEASE_TAGS_RE = re.compile(
 )
 _BRACKET_TAGS_RE = re.compile(r"[\[\(].*?[\]\)]")
 _REPEATED_SEPARATORS_RE = re.compile(r"[\s._-]+")
+# Episódio standalone no final ("- 04", "— 220") sem prefixo S/E.
+# Releases de fansubs como SubsPlease usam esse padrão pra animes weekly.
+# Detecta separador (- ou —) + 1-3 dígitos + fim/whitespace.
+_TRAILING_EPISODE_RE = re.compile(r"\s*[-—]\s*\d{1,3}\s*$")
 
 
 def extract_title_from_filename(filename: str) -> str:
@@ -142,22 +146,28 @@ def extract_title_from_filename(filename: str) -> str:
     1. Tira extensão.
     2. Remove tags entre `[]` ou `()` (group, language, quality).
     3. Remove conhecidos termos de release (codecs, source, season/episode).
-    4. Normaliza separadores (`.` `_` `-` viram espaço único).
-    5. Trim.
+    4. Remove episódio trailing standalone ("- 04", "- 220").
+    5. Normaliza separadores (`.` `_` `-` viram espaço único).
+    6. Trim.
 
     Exemplos:
         'Witch Hat Atelier S01E04 MULTi AD 1080p CR WEB-DL AAC2.0 x264-Tsundere-Raws.mkv'
             → 'Witch Hat Atelier'
-        '[ToonsHub] Witch Hat Atelier S01E04 1080p CR WEB-DL DUAL AAC2.0 H.264.mkv'
-            → 'Witch Hat Atelier'
+        '[SubsPlease] MARRIAGETOXIN - 04 (1080p) [08E275BC].mkv'
+            → 'MARRIAGETOXIN'
+        'Naruto - 220.mkv'
+            → 'Naruto'
         'Dr STONE S04E28 MULTi AD 1080p CR WEB-DL AAC2.0 x264-Tsundere-Raws.mkv'
             → 'Dr STONE'
     """
     if not filename:
         return ""
 
-    # 1) Sem extensão
-    name = re.sub(r"\.(mkv|mp4|m4v|avi|webm)$", "", filename, flags=re.IGNORECASE)
+    # 1) Sem extensão (vídeo + legenda — defensivo, caso passem .ass/.srt)
+    name = re.sub(
+        r"\.(mkv|mp4|m4v|avi|webm|ass|srt|vtt)$",
+        "", filename, flags=re.IGNORECASE,
+    )
 
     # 2) Remove tags entre parênteses/colchetes
     name = _BRACKET_TAGS_RE.sub("", name)
@@ -168,8 +178,11 @@ def extract_title_from_filename(filename: str) -> str:
     if m:
         name = name[:m.start()]
 
-    # 4) Normaliza separadores
+    # 4) Remove episódio standalone trailing (formato fansub: "Anime - NN")
+    name = _TRAILING_EPISODE_RE.sub("", name)
+
+    # 5) Normaliza separadores
     name = _REPEATED_SEPARATORS_RE.sub(" ", name)
 
-    # 5) Trim
+    # 6) Trim
     return name.strip()
