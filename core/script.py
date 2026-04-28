@@ -15,7 +15,7 @@ from providers import navy
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
 SUMMARY_PROMPT_VERSION = "summary-v2-2025-04-23"
-SHORT_SCRIPT_PROMPT_VERSION = "short-v3-hook-hierarchy-2025-04-23"
+SHORT_SCRIPT_PROMPT_VERSION = "short-v4-mae-vitima-explicita-2026-04-28"
 
 
 SUMMARY_PROMPT = """\
@@ -132,7 +132,8 @@ ROTEIRO INTEIRO IDEAL (siga esse padrão de estrutura + voz):
 >
 > E o dragão aparece mesmo! A Agathe tenta uma magia de fogo, mas a Coco
 > atrapalha. E é aí que a Agathe explode: chama a Coco de peso morto e
-> joga na cara que foi por causa dela que a mãe dela virou pedra. Caraca!
+> joga na cara que foi por causa da MAGIA DA COCO que a MÃE DA COCO virou
+> pedra. Caraca!
 >
 > Enquanto isso, o mestre Kieffrey descobre que a Confraria do Capuz,
 > uns magos que fazem magia proibida, tão atrás da Coco. E agora, como
@@ -149,6 +150,12 @@ VÍTIMAS, NÃO INVENTE AÇÕES.
 - "Coco queimou a si mesma" ≠ "Coco jogou fogo na amiga".
 - "Agathe gritou com Coco" ≠ "Agathe bateu na Coco".
 - "Tetia viu um dragão" ≠ "o dragão matou a Tetia".
+- "petrificou a própria mãe (da Coco)" ≠ "petrificou a mãe da Agathe".
+  → CUIDADO COM PRONOMES AMBÍGUOS. "Agathe acusa Coco de petrificar a mãe
+    DELA" — esse "dela" é MÃE DA COCO (a feiticeira que recebeu a magia
+    proibida foi Coco, então é a mãe DELA que virou pedra). Quando escrever
+    o roteiro, NUNCA use "mãe dela" ambíguo: escreva "mãe da Coco" sempre
+    que a vítima for ela mesma.
 Pode DRAMATIZAR o TOM ("mano", "tipo", "e o pior"), NUNCA dramatize os
 FATOS. Na dúvida, omita o detalhe.
 
