@@ -20,7 +20,7 @@ from providers import navy
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v6-hook-climax-2025-04-24"
+MATCHER_PROMPT_VERSION = "matcher-v7-visual-glossary-2026-04-28"
 
 
 MATCHER_PROMPT = """\
@@ -30,6 +30,8 @@ original aquela cena está acontecendo.
 
 CONTEXTO (resumo do que aconteceu):
 {summary}
+
+{visual_glossary_section}
 
 CENAS DO EPISÓDIO (grupos numerados com timestamps e diálogo OU descrição visual):
 {cues_table}
@@ -496,6 +498,7 @@ def match_beats_to_cues(
     enforce_monotonicity: bool = False,  # desligado por default: roteiros de short costumam ser non-linear (hook no clímax → flashback → volta pra conclusão). O monotonic destruía isso empurrando beats "retrocedendo" pra perto do anterior, colocando 14 beats consecutivos na mesma cena. Deixar a LLM decidir — ela ACERTA o non-linear.
     max_backward_seconds: float = 15.0,
     ad_cues: Optional[List[Cue]] = None,
+    visual_glossary: Optional[dict] = None,
 ) -> List[SceneMatch]:
     """Monta prompt com cues agrupadas, chama LLM, valida cobertura, aplica
     snap bidirecional. Beats sem match da LLM herdam a cena do beat anterior
@@ -524,8 +527,18 @@ def match_beats_to_cues(
         grouped = grouped_dialog
         ad_index_set = set()
 
+    # Glossário visual: mapeia termos do roteiro → aliases do AD. Reduz
+    # alucinação do matcher (ex: "feiticeiro mascarado" no roteiro vs.
+    # "vendedor de livros com olho grande" no AD).
+    from core.visual_index import render_glossary_for_prompt
+    glossary_text = render_glossary_for_prompt(visual_glossary or {})
+    visual_glossary_section = (
+        glossary_text if glossary_text else "(sem glossário visual)"
+    )
+
     prompt = MATCHER_PROMPT.format(
         summary=(summary or "(sem resumo disponível)").strip(),
+        visual_glossary_section=visual_glossary_section,
         cues_table=_cues_table(grouped, ad_indices=ad_index_set),
         visual_hints_block="",  # obsoleto — AD agora é selecionável na tabela
         beats_table=_beats_table(beats),

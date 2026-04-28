@@ -1405,6 +1405,44 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     )
 
             if not llm_output:
+                # Glossário visual — pré-passada que mapeia termos do roteiro
+                # com aliases do AD (ex: "feiticeiro mascarado" no roteiro
+                # ↔ "vendedor de livros com olho grande" no AD). Reduz
+                # alucinação do matcher. Cacheado por (summary, script, AD).
+                visual_glossary = {}
+                if self.ad_cues:
+                    from core import visual_index
+                    glossary_cache_parts = [
+                        "visual_glossary",
+                        visual_index.VISUAL_INDEX_PROMPT_VERSION,
+                        self.selected_model,
+                        self.summary_text,
+                        self.short_script_text,
+                        str(len(self.ad_cues)),
+                    ]
+                    cached_g = None
+                    if self.cfg.get("use_cache"):
+                        cached_g = cache.get_llm(glossary_cache_parts)
+                    if cached_g:
+                        try:
+                            visual_glossary = _json.loads(cached_g)
+                            self.after(0, self.log, "📚 [cache] Glossário visual carregado.")
+                        except Exception:
+                            visual_glossary = {}
+                    if not visual_glossary:
+                        self.after(0, self.log, "📚 Construindo glossário visual (roteiro ↔ AD)...")
+                        visual_glossary = visual_index.build_visual_glossary(
+                            summary=self.summary_text,
+                            short_script=self.short_script_text,
+                            ad_cues=self.ad_cues,
+                            api_key=self.cfg["navy_api_key"],
+                            base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                            model=self.selected_model,
+                        )
+                        if visual_glossary:
+                            self.after(0, self.log, f"📚 Glossário com {len(visual_glossary)} entradas.")
+                            if self.cfg.get("use_cache"):
+                                cache.set_llm(glossary_cache_parts, _json.dumps(visual_glossary))
                 if self.ad_cues:
                     self.after(
                         0, self.log,
@@ -1426,6 +1464,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     mkv_path=self.mkv_path,
                     avoid_landscape=True,
                     ad_cues=self.ad_cues or None,
+                    visual_glossary=visual_glossary,
                 )
                 # Salva no cache o JSON serializado (simplificado)
                 if self.cfg.get("use_cache"):
