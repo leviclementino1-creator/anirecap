@@ -71,27 +71,37 @@ def _alignment_to_words(alignment: Alignment) -> List[Tuple[str, float, float]]:
     return words
 
 
+# Pontuação que termina cláusula/frase — agrupar palavras através dela
+# embaralharia o sentido ("frase 1 final, frase 2 começo" como um caption só).
+_CLAUSE_END_PUNCT = set('.,!?:;…')
+
+
 def _group_short_words(
     words: List[Tuple[str, float, float]],
     min_word_chars: int = 4,
     min_combined_dur: float = 0.35,
     max_chars_per_caption: int = 14,
 ) -> List[Tuple[str, float, float]]:
-    """Agrupa palavras curtas adjacentes em um único caption pra dar respiro
-    visual. Palavras muito curtas (1-3 chars: "o", "de", "até", "ela") aparecem
-    e somem em milissegundos — visualmente parece "fora de sync" porque o olho
-    não acompanha.
+    """Agrupa palavras curtas adjacentes (NO MÁXIMO 2 por caption) pra dar
+    respiro visual. Palavras muito curtas (1-3 chars: "o", "de", "até", "ela")
+    aparecem e somem em milissegundos — visualmente parece "fora de sync"
+    porque o olho não acompanha.
 
-    Regra: se a palavra atual tem menos de `min_word_chars` caracteres OU
-    duração menor que `min_combined_dur` segundos, junta com a próxima
-    (separadas por espaço). Para de agrupar se a palavra agrupada exceder
-    `max_chars_per_caption` chars (mantém legibilidade — 2 palavras em CAPS
-    no formato 9:16 cabem confortavelmente até ~14 chars).
+    Regras:
+    - Agrupa SOMENTE 2 palavras por caption (nunca 3+). Mantém compreensão.
+    - Só agrupa quando a palavra atual é curta (<4 chars) OU dura <350ms.
+    - NÃO agrupa através de pontuação de fim de cláusula (. , ! ? : ; …) —
+      essa é a fronteira semântica entre ideias. Agrupar atravessa o sentido
+      ("ele foi, mas" + "voltou" combinaria fim de cláusula com começo de
+      próxima — confunde o leitor).
+    - Não agrupa se o resultado exceder `max_chars_per_caption` chars
+      (legibilidade no formato 9:16 vertical).
 
     Exemplos:
-    - "o" + "cara" → "O CARA"
-    - "eles" + "até" + "foram" → "ELES ATÉ FORAM" (se 14 chars cabem)
-    - "Yukiya" (6 chars) — sozinho, não agrupa
+    - "O" + "cara" → "O CARA" ✓
+    - "da" + "foto." → "DA FOTO." ✓ (pontuação no FIM, OK)
+    - "foi," + "mas" → mantém separados ❌ (vírgula entre cláusulas)
+    - "Yukiya" + "decide" → mantém separados ❌ (nenhuma é curta)
     """
     if not words:
         return []
@@ -101,29 +111,21 @@ def _group_short_words(
     while i < len(words):
         text, start, end = words[i]
         is_short = len(text) < min_word_chars or (end - start) < min_combined_dur
+        # Se a palavra atual termina em pontuação de cláusula, NÃO agrupa
+        # com a próxima (próxima é início de nova ideia).
+        ends_in_clause_punct = bool(text) and text[-1] in _CLAUSE_END_PUNCT
 
-        if is_short and i + 1 < len(words):
-            # Tenta agrupar com próximas
-            combined = text
-            new_end = end
-            j = i + 1
-            while j < len(words):
-                next_text = words[j][0]
-                tentative = f"{combined} {next_text}"
-                if len(tentative) > max_chars_per_caption:
-                    break
-                combined = tentative
-                new_end = words[j][2]
-                # Se a próxima já é "longa o bastante", para depois dela
-                if len(next_text) >= min_word_chars and (words[j][2] - words[j][1]) >= min_combined_dur:
-                    j += 1
-                    break
-                j += 1
-            out.append((combined, start, new_end))
-            i = j
-        else:
-            out.append((text, start, end))
-            i += 1
+        if is_short and not ends_in_clause_punct and i + 1 < len(words):
+            next_text, _, next_end = words[i + 1]
+            tentative = f"{text} {next_text}"
+            if len(tentative) <= max_chars_per_caption:
+                # Junta as 2 palavras num único caption e avança 2 posições
+                out.append((tentative, start, next_end))
+                i += 2
+                continue
+
+        out.append((text, start, end))
+        i += 1
 
     return out
 
