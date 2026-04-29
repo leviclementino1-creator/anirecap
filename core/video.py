@@ -59,6 +59,12 @@ def cut_clips(
     last_scene_start: Optional[float] = None  # cena onde o beat anterior TERMINOU
     prev_video_start: Optional[float] = None  # range temporal do beat anterior
     prev_video_end: Optional[float] = None
+    # Drift accumulator: round(dur*fps)/fps difere de dur por até 0.5/fps
+    # (~16ms a 30fps). Sobre 25-30 clipes, isso pode acumular 200-500ms,
+    # dessincronizando captions e cenas em relação à narração. Cada clipe
+    # ganha o drift do anterior somado, e arredonda no novo total — assim
+    # a soma das durações REAIS converge pra soma das beat_durations.
+    drift_acc = 0.0
     for i, m in enumerate(plan):
         out = os.path.join(out_dir, f"clip_{i:03d}.mp4")
 
@@ -100,6 +106,15 @@ def cut_clips(
             prev_video_start = first_start
             prev_video_end = last_end
 
+        # Calcula nb_frames considerando drift acumulado dos clipes anteriores.
+        # target_dur = duração desejada deste beat + drift carregado.
+        # nb_frames arredonda; drift novo = quanto o output ficou além/aquém.
+        beat_dur_total = sum(d for _, d in subclips) if len(subclips) > 1 else subclips[0][1]
+        target_dur = beat_dur_total + drift_acc
+        nb_frames = max(1, round(target_dur * TARGET_FPS))
+        real_dur = nb_frames / TARGET_FPS
+        drift_acc = target_dur - real_dur  # erro residual pro próximo clipe
+
         if len(subclips) == 1:
             # === SINGLE-CUT (modo simples) ===
             # NÃO adiciona ghost guard aqui: pick_subclips já entrega timestamps
@@ -109,10 +124,6 @@ def cut_clips(
             target_start = max(0.0, sub_start)
             rough_seek = max(0.0, target_start - 5.0)
             fine_seek = target_start - rough_seek
-            # Calcula nb_frames pra duração EXATA. `-frames:v N` corta o
-            # output em N frames; combinado com `-r TARGET_FPS` cada clipe
-            # dura exatamente N/TARGET_FPS segundos.
-            nb_frames = max(1, round(sub_dur * TARGET_FPS))
             cmd = [
                 ffmpeg, "-y",
                 "-ss", f"{rough_seek:.3f}",
@@ -120,7 +131,7 @@ def cut_clips(
                 "-ss", f"{fine_seek:.3f}",
                 "-frames:v", str(nb_frames),
                 "-r", str(TARGET_FPS),
-                "-vsync", "cfr",
+                "-fps_mode", "cfr",
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
@@ -142,9 +153,6 @@ def cut_clips(
                     f"setpts=PTS-STARTPTS[v{j}]"
                 )
                 concat_inputs.append(f"[v{j}]")
-            # Total de frames esperado = soma dos nb_frames dos sub-clipes
-            total_dur = sum(d for _, d in subclips)
-            nb_frames = max(1, round(total_dur * TARGET_FPS))
             filter_str = (
                 ";".join(trim_filters)
                 + ";"
@@ -158,7 +166,7 @@ def cut_clips(
                 "-filter_complex", filter_str,
                 "-map", "[out]",
                 "-frames:v", str(nb_frames),
-                "-vsync", "cfr",
+                "-fps_mode", "cfr",
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
