@@ -71,6 +71,63 @@ def _alignment_to_words(alignment: Alignment) -> List[Tuple[str, float, float]]:
     return words
 
 
+def _group_short_words(
+    words: List[Tuple[str, float, float]],
+    min_word_chars: int = 4,
+    min_combined_dur: float = 0.35,
+    max_chars_per_caption: int = 14,
+) -> List[Tuple[str, float, float]]:
+    """Agrupa palavras curtas adjacentes em um único caption pra dar respiro
+    visual. Palavras muito curtas (1-3 chars: "o", "de", "até", "ela") aparecem
+    e somem em milissegundos — visualmente parece "fora de sync" porque o olho
+    não acompanha.
+
+    Regra: se a palavra atual tem menos de `min_word_chars` caracteres OU
+    duração menor que `min_combined_dur` segundos, junta com a próxima
+    (separadas por espaço). Para de agrupar se a palavra agrupada exceder
+    `max_chars_per_caption` chars (mantém legibilidade — 2 palavras em CAPS
+    no formato 9:16 cabem confortavelmente até ~14 chars).
+
+    Exemplos:
+    - "o" + "cara" → "O CARA"
+    - "eles" + "até" + "foram" → "ELES ATÉ FORAM" (se 14 chars cabem)
+    - "Yukiya" (6 chars) — sozinho, não agrupa
+    """
+    if not words:
+        return []
+
+    out: List[Tuple[str, float, float]] = []
+    i = 0
+    while i < len(words):
+        text, start, end = words[i]
+        is_short = len(text) < min_word_chars or (end - start) < min_combined_dur
+
+        if is_short and i + 1 < len(words):
+            # Tenta agrupar com próximas
+            combined = text
+            new_end = end
+            j = i + 1
+            while j < len(words):
+                next_text = words[j][0]
+                tentative = f"{combined} {next_text}"
+                if len(tentative) > max_chars_per_caption:
+                    break
+                combined = tentative
+                new_end = words[j][2]
+                # Se a próxima já é "longa o bastante", para depois dela
+                if len(next_text) >= min_word_chars and (words[j][2] - words[j][1]) >= min_combined_dur:
+                    j += 1
+                    break
+                j += 1
+            out.append((combined, start, new_end))
+            i = j
+        else:
+            out.append((text, start, end))
+            i += 1
+
+    return out
+
+
 def _ass_escape(text: str) -> str:
     """Neutraliza caracteres ASS e normaliza. `{}` são override codes."""
     return (
@@ -121,6 +178,9 @@ def generate_ass(
     margin_v = max(0, int(h * (1.0 - vertical_pct)))
 
     words = _alignment_to_words(alignment)
+    # Junta palavras curtas adjacentes pra evitar piscar muito rápido na tela
+    # (palavras de 1-3 chars apareciam por <200ms cada — parecia dessincronia).
+    words = _group_short_words(words)
 
     lines = [ASS_HEADER.format(
         w=w, h=h, fontsize=fontsize, outline=outline, margin_v=margin_v,

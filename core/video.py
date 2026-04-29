@@ -129,12 +129,17 @@ def cut_clips(
                 "-ss", f"{rough_seek:.3f}",
                 "-i", mkv_path,
                 "-ss", f"{fine_seek:.3f}",
+                # filter explícito: fps={TARGET_FPS} antes do encoder garante
+                # entrada CFR mesmo se mkv original é VFR (variable framerate).
+                # setpts=N/FR/TB reseta PTS pra começar em 0 e ser linear.
+                "-vf", f"fps={TARGET_FPS},setpts=N/FR/TB",
                 "-frames:v", str(nb_frames),
                 "-r", str(TARGET_FPS),
                 "-fps_mode", "cfr",
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
+                "-video_track_timescale", "30000",
                 "-avoid_negative_ts", "make_zero",
                 out,
             ]
@@ -170,6 +175,7 @@ def cut_clips(
                 "-an",
                 "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
                 "-pix_fmt", "yuv420p",
+                "-video_track_timescale", "30000",
                 "-avoid_negative_ts", "make_zero",
                 out,
             ]
@@ -238,8 +244,14 @@ def render_short(
     fg_w = int(round(w * fg_scale))
     # Overlay é centralizado — (W-w)/2 é negativo quando fg > tela, resultando
     # em crop lateral simétrico.
+    # `fps={TARGET_FPS}` no início força stream contínuo de frames com PTS
+    # regulares — sem isso, o concat demuxer pode introduzir micro-gaps que
+    # dessincronizam captions e cenas.
+    # `setpts=N/FR/TB` reseta o PTS do stream pra começar em 0 e ser linear
+    # (1 frame = 1/FPS seg), garantindo que `subtitles=` overlay use o
+    # mesmo eixo temporal que a narração.
     video_chain = (
-        f"[0:v]split=2[fg_src][bg_src];"
+        f"[0:v]fps={TARGET_FPS},setpts=N/FR/TB,split=2[fg_src][bg_src];"
         f"[bg_src]scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h},boxblur=luma_radius=20:luma_power=3[bg];"
         f"[fg_src]scale={fg_w}:-2[fg];"
@@ -247,9 +259,13 @@ def render_short(
         f"[vid]subtitles={captions_rel}[out]"
     )
 
-    # Monta comando ffmpeg base
+    # Monta comando ffmpeg base.
+    # `-fflags +genpts` força ffmpeg a regenerar PTS desde zero em vez de
+    # confiar nos timestamps salvos nos .mp4 dos clipes — elimina drift
+    # acumulado por inconsistências do concat demuxer.
     cmd = [
         ffmpeg, "-y",
+        "-fflags", "+genpts",
         "-f", "concat", "-safe", "0", "-i", concat_list,   # 0: vídeo concat
         "-i", narration_path,                              # 1: narração
     ]
