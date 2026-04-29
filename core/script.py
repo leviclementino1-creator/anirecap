@@ -14,8 +14,8 @@ from providers import navy
 # literal. Bumpar SEMPRE que a mudança no prompt deve invalidar resultados
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
-SUMMARY_PROMPT_VERSION = "summary-v3-fidelidade-pronomes-2026-04-28"
-SHORT_SCRIPT_PROMPT_VERSION = "short-v4-mae-vitima-explicita-2026-04-28"
+SUMMARY_PROMPT_VERSION = "summary-v4-honorificos-pronomes-2026-04-28"
+SHORT_SCRIPT_PROMPT_VERSION = "short-v5-pronomes-honorificos-2026-04-28"
 
 
 SUMMARY_PROMPT = """\
@@ -54,6 +54,14 @@ REGRAS DE FIDELIDADE FACTUAL (CRÍTICO):
   certeza; diga "Futae, que quer a empresa" sem rotular relação).
 - Para CADA afirmação que você escreve, deveria conseguir apontar
   uma linha do transcript que sustenta. Na dúvida, OMITA.
+
+NOMES DOS PERSONAGENS:
+- Remova HONORÍFICOS japoneses do nome (-kun, -chan, -san, -sama,
+  -senpai, -sensei). "Miku-senpai" no transcript vira "Miku" no
+  resumo. "Otaku-kun" vira "Otaku". Honorífico não combina com
+  narração pt-BR e atrapalha o tom do roteiro depois.
+- EXCEÇÃO: preserve só se o honorífico é literalmente o NOME DO
+  PERSONAGEM (ex: "Onee-sama" usado como apelido fixo).
 
 TRANSCRIÇÃO:
 """
@@ -210,6 +218,31 @@ VOZ FALADA — CRÍTICO:
   * "farmando aura"    → use só se o contexto é claríssimo, senão corta
   * Qualquer gíria que precise explicação está PROIBIDA.
 - Nada de markdown, hashtags (#), asteriscos (*), títulos, bullets.
+
+PRONOMES E REPETIÇÃO DE NOMES:
+- Use o nome do personagem na PRIMEIRA menção em cada bloco. Depois,
+  prefira pronomes (ele, ela, eles, elas) ou referências curtas
+  ("o cara", "a mina", "a moleca", "o garoto") pra não soar robótico.
+- Repetir "Yukiya" 8 vezes seguidas é ruim. Mas trocar de "Yukiya" pra
+  "ele" no MEIO de uma frase com 2 personagens do mesmo gênero gera
+  ambiguidade — nesse caso, repete o nome.
+- Exemplo BOM:
+  > "O Yukiya tava bolado. Ele decide se esforçar pra um encontro com
+  >  a Miku. Ela já tava planejando o look, e ele, surtado, alugou
+  >  vestido pra ela."
+- Exemplo RUIM (repete demais):
+  > "O Yukiya tava bolado. O Yukiya decide se esforçar pra um encontro
+  >  com a Miku. A Miku já tava planejando, e o Yukiya alugou vestido
+  >  pra Miku."
+
+HONORÍFICOS JAPONESES — REMOVA SEMPRE:
+- Tira -kun, -chan, -san, -sama, -senpai, -sensei dos nomes.
+- "Otaku-kun" → "Otaku". "Miku-senpai" → "Miku". "Sensei Aizawa" →
+  "Aizawa". Honorífico não traduz pro PT brasileiro coloquial e
+  soa esquisito na narração.
+- EXCEÇÃO: se o personagem é literalmente CHAMADO assim no roteiro
+  como APELIDO/IDENTIDADE (ex: "Onee-sama" como nome próprio numa
+  série), aí preserva. Mas isso é raro.
 
 CORTE IMPIEDOSO:
 - Remova detalhes secundários.
