@@ -20,7 +20,7 @@ from providers import navy
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v7-visual-glossary-2026-04-28"
+MATCHER_PROMPT_VERSION = "matcher-v8-silence-pseudo-cues-2026-04-28"
 
 
 MATCHER_PROMPT = """\
@@ -36,10 +36,22 @@ CONTEXTO (resumo do que aconteceu):
 CENAS DO EPISÓDIO (grupos numerados com timestamps e diálogo OU descrição visual):
 {cues_table}
 
-NOTA SOBRE CUES `[VISUAL]`:
+NOTA SOBRE CUES `[VISUAL]` E `[SILÊNCIO]`:
 Linhas com prefixo `[VISUAL]` são descrições narradas do que APARECE NA TELA
-(audio description, feita pra acessibilidade). Linhas sem prefixo são falas
-de personagem. AMBAS são cue_ids válidos que você pode escolher.
+(audio description, feita pra acessibilidade). Linhas com texto começando
+em `[SILÊNCIO]` são pseudo-cues geradas onde há scene change SEM diálogo —
+sinalizam cenas visuais silenciosas (thought bubbles, transições, imaginação,
+reflexão). Linhas sem nenhum prefixo são falas de personagem. TODAS são
+cue_ids válidos que você pode escolher.
+
+QUANDO PREFERIR CUE `[SILÊNCIO]`:
+- Beat descreve IMAGINAÇÃO/THOUGHT BUBBLE ("ele imagina...", "sonhando
+  com..."). A thought bubble aparece visualmente em cenas sem fala.
+- Beat descreve TRANSIÇÃO VISUAL ou REFLEXÃO sem diálogo ("ele olha o
+  céu", "ela respira fundo", cenas estabelecedoras).
+- Beat descreve REAÇÃO SILENCIOSA prolongada ("ela paralisa", "olhar
+  perdido"). Cuidado: se há fala próxima, prefira a cue de fala que
+  acompanha a reação.
 
 QUANDO PREFERIR CUE `[VISUAL]`:
 - Beat descreve AÇÃO FÍSICA que acontece na tela (ex: "Agathe solta fogo",
@@ -242,15 +254,18 @@ def _cues_table(
     cues: List[Cue],
     max_chars_each: int = 120,
     ad_indices: Optional[set] = None,
+    silence_indices: Optional[set] = None,
 ) -> str:
     """Renderiza as cenas agrupadas como tabela pro prompt.
 
     Se `ad_indices` é fornecido (set de cue_ids 1-based), essas linhas
-    recebem prefixo `[VISUAL]` indicando que vêm de audio description
-    (descrição visual narrada). O LLM pode escolher tanto cues normais
-    quanto [VISUAL] — ambas têm cue_id válido.
+    recebem prefixo `[VISUAL]` indicando que vêm de audio description.
+    Se `silence_indices` é fornecido, recebem prefixo `[SILÊNCIO]` —
+    pseudo-cues de cenas sem fala (geradas por scene changes em gaps
+    de diálogo). O LLM pode escolher qualquer uma — todas têm cue_id válido.
     """
     ad_indices = ad_indices or set()
+    silence_indices = silence_indices or set()
     lines = []
     for i, c in enumerate(cues):
         text = c.text[:max_chars_each].replace("\n", " ")
@@ -260,7 +275,11 @@ def _cues_table(
         start_ss = c.start - start_mm * 60
         end_mm = int(c.end // 60)
         end_ss = c.end - end_mm * 60
-        mark = "[VISUAL] " if (i + 1) in ad_indices else ""
+        mark = ""
+        if (i + 1) in ad_indices:
+            mark = "[VISUAL] "
+        elif (i + 1) in silence_indices:
+            mark = ""  # texto da cue ja comeca com [SILÊNCIO]
         # `CUE=N` em vez de `[N]` — formato explícito pra o LLM não
         # achar que o cue_id é algum outro número na linha.
         lines.append(
@@ -298,6 +317,79 @@ def _merge_subtitle_and_ad(
         if id(c) in ad_ids:
             ad_set.add(i + 1)
     return merged, ad_set
+
+
+def inject_silence_cues(
+    cues: List[Cue],
+    scene_changes: List[float],
+    min_silence_gap: float = 5.0,
+    min_silence_window: float = 1.5,
+) -> Tuple[List[Cue], set]:
+    """Injeta pseudo-cues [SILÊNCIO] em scene changes dentro de gaps longos
+    sem diálogo. Sem AD, animes têm cenas silenciosas relevantes (thought
+    bubbles, transições, reflexão visual) que não estão na tabela do matcher
+    porque não têm fala. Essas pseudo-cues dão ao matcher acesso a esses
+    momentos.
+
+    Critério:
+    - Gap entre cues consecutivas >= `min_silence_gap` (5s default)
+    - Cada scene change DENTRO do gap vira uma pseudo-cue cobrindo do scene
+      change até o próximo (ou até o fim do gap)
+    - Pseudo-cue tem texto fixo "[SILÊNCIO] cena visual sem fala" pra
+      sinalizar ao LLM que pode escolher pra beats descritivos
+    - Pseudo-cue tem janela mínima de `min_silence_window` (1.5s) — abaixo
+      disso é flash, ignora
+
+    Retorna (cues_merged, silence_index_set) — set de cue_ids 1-based das
+    pseudo-cues injetadas (pra renderizar com marcação no prompt).
+    """
+    if not cues or not scene_changes:
+        return cues, set()
+
+    cues_sorted = sorted(cues, key=lambda c: c.start)
+    scenes_sorted = sorted(scene_changes)
+    silence_pseudo: List[Cue] = []
+
+    # Detecta gaps de silêncio entre cues consecutivas
+    for i in range(len(cues_sorted) - 1):
+        gap_start = cues_sorted[i].end
+        gap_end = cues_sorted[i + 1].start
+        if gap_end - gap_start < min_silence_gap:
+            continue
+
+        # Pega scene changes dentro do gap (excluindo bordas)
+        scenes_in_gap = [
+            s for s in scenes_sorted
+            if gap_start + 0.2 < s < gap_end - 0.2
+        ]
+        if not scenes_in_gap:
+            continue
+
+        # Cria pseudo-cue por scene change (cobre até próximo scene change)
+        boundaries = scenes_in_gap + [gap_end]
+        for j in range(len(boundaries) - 1):
+            ps_start = boundaries[j]
+            ps_end = boundaries[j + 1]
+            window = ps_end - ps_start
+            if window < min_silence_window:
+                continue  # cena curta = flash, pula
+            silence_pseudo.append(Cue(
+                start=ps_start,
+                end=ps_end,
+                text="[SILÊNCIO] cena visual sem fala",
+            ))
+
+    if not silence_pseudo:
+        return cues, set()
+
+    # Mescla e calcula set de indices das pseudo-cues
+    merged = sorted(cues + silence_pseudo, key=lambda c: c.start)
+    pseudo_ids = {id(c) for c in silence_pseudo}
+    silence_set = set()
+    for i, c in enumerate(merged):
+        if id(c) in pseudo_ids:
+            silence_set.add(i + 1)
+    return merged, silence_set
 
 
 def _beats_table(beats: List[NarrationBeat]) -> str:
@@ -527,6 +619,20 @@ def match_beats_to_cues(
         grouped = grouped_dialog
         ad_index_set = set()
 
+    # Pseudo-cues de SILÊNCIO: animes sem AD têm cenas silenciosas
+    # relevantes (thought bubbles, transições visuais, reflexão sem fala).
+    # Sem essas pseudo-cues, o matcher não enxerga esses momentos e força
+    # beats descritivos pra cair em cues de fala próximas (que mostram outra
+    # coisa visualmente). Ativadas só quando NÃO há AD — quando há AD, ele
+    # já cobre cenas silenciosas com descrição visual real.
+    silence_index_set: set = set()
+    if not ad_cues and scene_changes:
+        grouped, silence_index_set = inject_silence_cues(
+            grouped, scene_changes,
+            min_silence_gap=5.0,
+            min_silence_window=1.5,
+        )
+
     # Glossário visual: mapeia termos do roteiro → aliases do AD. Reduz
     # alucinação do matcher (ex: "feiticeiro mascarado" no roteiro vs.
     # "vendedor de livros com olho grande" no AD).
@@ -539,7 +645,11 @@ def match_beats_to_cues(
     prompt = MATCHER_PROMPT.format(
         summary=(summary or "(sem resumo disponível)").strip(),
         visual_glossary_section=visual_glossary_section,
-        cues_table=_cues_table(grouped, ad_indices=ad_index_set),
+        cues_table=_cues_table(
+            grouped,
+            ad_indices=ad_index_set,
+            silence_indices=silence_index_set,
+        ),
         visual_hints_block="",  # obsoleto — AD agora é selecionável na tabela
         beats_table=_beats_table(beats),
         n_beats=len(beats),

@@ -1338,7 +1338,10 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             regions = []
             if self.subtitle_path:
                 regions.extend(subtitle.detect_op_ed_regions_by_style(self.subtitle_path))
-            regions.extend(subtitle.detect_music_gaps(cues_no_signs, mkv_duration=mkv_dur))
+            regions.extend(subtitle.detect_music_gaps(
+                cues_no_signs, mkv_duration=mkv_dur,
+                scene_changes=scenes,
+            ))
 
             if regions:
                 regions = sorted(set((round(a, 2), round(b, 2)) for a, b in regions))

@@ -7,7 +7,7 @@ O texto limpo reproduz exatamente o comportamento do app 1.2.4:
 """
 import re
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from core.cue import Cue
 
@@ -130,6 +130,7 @@ def detect_music_gaps(
     min_end_gap: float = 25.0,
     pad_before: float = 5.0,
     pad_after: float = 5.0,
+    scene_changes: Optional[List[float]] = None,
 ) -> List[Tuple[float, float]]:
     """Detecta regiões de OP/ED/música analisando gaps no diálogo.
 
@@ -142,6 +143,11 @@ def detect_music_gaps(
     Aplica padding (`pad_before` antes do gap, `pad_after` depois) pra
     englobar title cards e previews adjacentes que têm dialog "Default"
     mas visualmente pertencem à borda da OP/ED.
+
+    Se `scene_changes` é fornecido, o padding NÃO ultrapassa uma scene
+    change adjacente — evita engolir cenas silenciosas mas legítimas
+    que ficam logo antes da OP/ED (ex: thought bubble final do ep,
+    transição visual antes dos créditos).
 
     Requer `mkv_duration` pra detectar o gap final. Se 0, ignora.
     """
@@ -176,12 +182,35 @@ def detect_music_gaps(
         if mkv_duration - last_end >= min_end_gap:
             regions.append((last_end, mkv_duration))
 
-    # Aplica padding: expande cada região pra fora
+    # Aplica padding: expande cada região pra fora.
+    # Se temos scene_changes, o pad não ultrapassa scene change adjacente —
+    # evita engolir cenas silenciosas legítimas (thought bubble, transição
+    # visual) que ficam entre a última fala e o início real da OP/ED.
     if pad_before > 0 or pad_after > 0:
-        regions = [
-            (max(0.0, a - pad_before), b + pad_after)
-            for a, b in regions
-        ]
+        scenes = sorted(scene_changes or [])
+        new_regions: List[Tuple[float, float]] = []
+        for a, b in regions:
+            # pad_before: expande pra trás, mas para na scene change mais
+            # recente dentro do range (a - pad_before, a).
+            new_a = max(0.0, a - pad_before)
+            if scenes:
+                blocking = [
+                    s for s in scenes
+                    if new_a < s < a
+                ]
+                if blocking:
+                    new_a = max(blocking)  # scene change mais próxima de `a`
+            # pad_after: idem na frente.
+            new_b = b + pad_after
+            if scenes:
+                blocking = [
+                    s for s in scenes
+                    if b < s < new_b
+                ]
+                if blocking:
+                    new_b = min(blocking)  # scene change mais próxima de `b`
+            new_regions.append((new_a, new_b))
+        regions = new_regions
 
     return regions
 
