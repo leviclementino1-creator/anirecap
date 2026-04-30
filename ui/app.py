@@ -1318,6 +1318,25 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             )
             self.after(0, self.log, f"🎞️ {len(scenes)} mudanças de cena detectadas.")
 
+            # 2b. Audio envelope — proxy de intensidade visual (cacheado).
+            # Sem CV, este é o melhor sinal pra distinguir cenas de impacto
+            # (LOUD/HIGH-ACTION/DRAMATIC-POP) de cenas calmas. ~30s no 1º run.
+            self.after(0, self.log, "🔊 Extraindo envelope de áudio (proxy visual)...")
+            from core import audio_signal
+            audio_envelope = audio_signal.build_envelope(
+                self.mkv_path,
+                binaries_dir=self.cfg.get("binaries_dir", ""),
+                use_cache=True,
+            )
+            if audio_envelope.duration > 0:
+                self.after(
+                    0, self.log,
+                    f"🔊 Envelope OK ({len(audio_envelope.onsets)} onsets, "
+                    f"{len(audio_envelope.silences)} silêncios)."
+                )
+            else:
+                self.after(0, self.log, "🔊 [aviso] Envelope vazio — matcher rodará sem proxy de áudio.")
+
             # 2b. Detecta regiões de OP/ED. Duas estratégias combinadas:
             # (1) Estilo "OP/ED/Song" no .ass — funciona se o ripper tagueou.
             # (2) Gaps longos no diálogo (>45s) — funciona com SubsPlease etc
@@ -1468,6 +1487,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     avoid_landscape=True,
                     ad_cues=self.ad_cues or None,
                     visual_glossary=visual_glossary,
+                    audio_envelope=audio_envelope,
                 )
                 # Salva no cache o JSON serializado (simplificado)
                 if self.cfg.get("use_cache"):
@@ -1512,6 +1532,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                         base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
                         model=self.selected_model,
                         scene_changes=scenes,
+                        audio_envelope=audio_envelope,
                         max_backward_snap=3.0, max_forward_snap=0.5,
                         mkv_path=self.mkv_path, avoid_landscape=True,
                         ad_cues=self.ad_cues or None,

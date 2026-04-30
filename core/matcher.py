@@ -20,7 +20,7 @@ from providers import navy
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v8-silence-pseudo-cues-2026-04-28"
+MATCHER_PROMPT_VERSION = "matcher-v9-audio-archetypes-diversity-2026-04-28"
 
 
 MATCHER_PROMPT = """\
@@ -33,8 +33,24 @@ CONTEXTO (resumo do que aconteceu):
 
 {visual_glossary_section}
 
+{archetypes_section}
+
 CENAS DO EPISÓDIO (grupos numerados com timestamps e diálogo OU descrição visual):
 {cues_table}
+
+NOTA SOBRE TAGS DE ÁUDIO 🔊:
+Algumas linhas terminam com tags como 🔊LOUD, 🔊HIGH-ACTION, 🔊DRAMATIC-POP.
+Essas tags vêm do envelope de áudio do .mkv original (sem CV) e são PROXY
+DE INTENSIDADE VISUAL:
+- 🔊LOUD → música ou SFX em pico = cena visualmente carregada
+- 🔊HIGH-ACTION → muitos onsets = sequência de impactos físicos (ação)
+- 🔊DRAMATIC-POP → silêncio sustentado seguido de pico = MOMENTO REVELAÇÃO
+  (frames mais memoráveis do ep — preferência alta pra HOOK e CLIMAX)
+- 🔊quiet → áudio calmo = cena contemplativa/setup
+
+REGRA PRÁTICA: pra beats classificados como HOOK ou CLIMAX (veja arquétipos
+acima), PREFIRA cues com 🔊LOUD, 🔊HIGH-ACTION ou 🔊DRAMATIC-POP. Pra SETUP
+ou PAYOFF contemplativo, 🔊quiet é OK. Pra ESCALADA, prefira HIGH-ACTION.
 
 NOTA SOBRE CUES `[VISUAL]` E `[SILÊNCIO]`:
 Linhas com prefixo `[VISUAL]` são descrições narradas do que APARECE NA TELA
@@ -255,6 +271,7 @@ def _cues_table(
     max_chars_each: int = 120,
     ad_indices: Optional[set] = None,
     silence_indices: Optional[set] = None,
+    audio_envelope=None,
 ) -> str:
     """Renderiza as cenas agrupadas como tabela pro prompt.
 
@@ -262,7 +279,11 @@ def _cues_table(
     recebem prefixo `[VISUAL]` indicando que vêm de audio description.
     Se `silence_indices` é fornecido, recebem prefixo `[SILÊNCIO]` —
     pseudo-cues de cenas sem fala (geradas por scene changes em gaps
-    de diálogo). O LLM pode escolher qualquer uma — todas têm cue_id válido.
+    de diálogo).
+
+    Se `audio_envelope` é fornecido (AudioEnvelope), cada cue ganha tags
+    de intensidade do áudio do .mkv original — proxy de impacto visual
+    sem CV. Tags possíveis: LOUD, quiet, HIGH-ACTION, DRAMATIC-POP.
     """
     ad_indices = ad_indices or set()
     silence_indices = silence_indices or set()
@@ -280,10 +301,22 @@ def _cues_table(
             mark = "[VISUAL] "
         elif (i + 1) in silence_indices:
             mark = ""  # texto da cue ja comeca com [SILÊNCIO]
+
+        # Audio intensity tag — proxy de impacto visual.
+        # Aplicada no MEIO da cue pra captar o pico, não a borda.
+        audio_tag = ""
+        if audio_envelope is not None:
+            mid_t = (c.start + c.end) / 2.0
+            features = audio_envelope.features_at(mid_t)
+            tag = features.short_tag()
+            if tag:
+                audio_tag = f" 🔊{tag}"
+
         # `CUE=N` em vez de `[N]` — formato explícito pra o LLM não
         # achar que o cue_id é algum outro número na linha.
         lines.append(
-            f"CUE={i+1:<4}| {start_mm:02d}:{start_ss:05.2f}-{end_mm:02d}:{end_ss:05.2f} | {mark}{text}"
+            f"CUE={i+1:<4}| {start_mm:02d}:{start_ss:05.2f}-{end_mm:02d}:{end_ss:05.2f} | "
+            f"{mark}{text}{audio_tag}"
         )
     return "\n".join(lines)
 
@@ -591,6 +624,8 @@ def match_beats_to_cues(
     max_backward_seconds: float = 15.0,
     ad_cues: Optional[List[Cue]] = None,
     visual_glossary: Optional[dict] = None,
+    audio_envelope=None,
+    diversity_min_gap: float = 8.0,
 ) -> List[SceneMatch]:
     """Monta prompt com cues agrupadas, chama LLM, valida cobertura, aplica
     snap bidirecional. Beats sem match da LLM herdam a cena do beat anterior
@@ -642,13 +677,22 @@ def match_beats_to_cues(
         glossary_text if glossary_text else "(sem glossário visual)"
     )
 
+    # Beat archetypes — direciona o matcher a aplicar regras diferentes
+    # conforme HOOK, SETUP, ESCALADA, CLIMAX, PAYOFF.
+    from core.beat_archetypes import classify_beats, render_archetypes_for_prompt
+    archetypes = classify_beats(beats)
+    archetypes_text = render_archetypes_for_prompt(archetypes)
+    archetypes_section = archetypes_text if archetypes_text else "(arquétipos não classificados)"
+
     prompt = MATCHER_PROMPT.format(
         summary=(summary or "(sem resumo disponível)").strip(),
         visual_glossary_section=visual_glossary_section,
+        archetypes_section=archetypes_section,
         cues_table=_cues_table(
             grouped,
             ad_indices=ad_index_set,
             silence_indices=silence_index_set,
+            audio_envelope=audio_envelope,
         ),
         visual_hints_block="",  # obsoleto — AD agora é selecionável na tabela
         beats_table=_beats_table(beats),
@@ -805,6 +849,16 @@ def match_beats_to_cues(
             max_backward_seconds=max_backward_seconds,
         )
 
+    # Diversity guard: evita 2 beats consecutivos caírem em timestamps
+    # próximos (mesmo "shot" do anime). Editor humano nunca faz isso —
+    # alterna ângulos. Se beat N e N+1 estão a < diversity_min_gap segs,
+    # tenta deslocar o N+1 pra próxima scene change na janela disponível.
+    if scene_changes:
+        _enforce_cross_beat_diversity(
+            results, scene_changes,
+            min_gap=diversity_min_gap,
+        )
+
     # Safety net anti-landscape: verifica se cada video_start tem rosto; se
     # não, tenta mover pra próxima scene change dentro da janela.
     if avoid_landscape and mkv_path and os.path.isfile(mkv_path):
@@ -813,6 +867,51 @@ def match_beats_to_cues(
         )
 
     return results
+
+
+def _enforce_cross_beat_diversity(
+    results: List[SceneMatch],
+    scene_changes: List[float],
+    min_gap: float = 8.0,
+) -> int:
+    """Garante que beats consecutivos não fiquem na mesma "cena visual".
+
+    Se beat N+1 está a menos de `min_gap` segundos do beat N (mesmo "shot"),
+    desloca o N+1 pra próxima scene change disponível dentro de uma janela
+    razoável (até 15s pra frente). Editor profissional alterna ângulos —
+    sem isso, é comum ver 3 closeups consecutivos da mesma personagem.
+
+    Não atua quando os beats estão em timestamps muito distantes (saltos
+    temporais legítimos do roteiro non-linear).
+    """
+    moved = 0
+    if not results or not scene_changes:
+        return 0
+
+    scenes_sorted = sorted(scene_changes)
+    for i in range(1, len(results)):
+        prev = results[i - 1]
+        cur = results[i]
+        gap = cur.video_start - prev.video_start
+
+        # Só atua quando há OVERLAP/PROXIMIDADE TEMPORAL (não em saltos
+        # narrativos legítimos, ex: beat 5 em 1280s, beat 6 em 50s)
+        if 0 < gap < min_gap:
+            # Tenta deslocar pra próxima scene change após prev.video_end
+            target_after = prev.video_start + prev.beat.duration + 0.2
+            candidates = [
+                s for s in scenes_sorted
+                if target_after <= s <= cur.video_start + 15.0
+                and s > cur.video_start  # de fato avança
+            ]
+            if candidates:
+                new_start = candidates[0]
+                cur.video_start = new_start
+                cur.video_end = new_start + cur.beat.duration
+                cur.snapped = True
+                cur.why = f"[diversity] {cur.why}"
+                moved += 1
+    return moved
 
 
 def _enforce_temporal_monotonicity(
