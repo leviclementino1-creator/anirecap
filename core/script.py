@@ -14,7 +14,7 @@ from providers import navy
 # literal. Bumpar SEMPRE que a mudança no prompt deve invalidar resultados
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
-SUMMARY_PROMPT_VERSION = "summary-v4-honorificos-pronomes-2026-04-28"
+SUMMARY_PROMPT_VERSION = "summary-v5-atribuicao-acoes-2026-04-28"
 SHORT_SCRIPT_PROMPT_VERSION = "short-v5-pronomes-honorificos-2026-04-28"
 
 
@@ -54,6 +54,39 @@ REGRAS DE FIDELIDADE FACTUAL (CRÍTICO):
   certeza; diga "Futae, que quer a empresa" sem rotular relação).
 - Para CADA afirmação que você escreve, deveria conseguir apontar
   uma linha do transcript que sustenta. Na dúvida, OMITA.
+
+ATRIBUIÇÃO DE AÇÕES — REGRA CRÍTICA (cuidado redobrado):
+Quando uma cena tem múltiplos personagens e a legenda mostra uma
+AÇÃO FÍSICA (chute, soco, queda, abraço, beijo, empurrão) sem
+identificar claramente quem é o AGENTE, NÃO ESCOLHA O PERSONAGEM
+EM FOCO da cena anterior. Em vez disso:
+  - Use voz passiva: "Yuu leva um chute no queixo"
+  - Use sujeito genérico: "Alguém chuta Yuu na confusão"
+  - Ou OMITA o detalhe se a legenda não nomeia o agente
+
+Erros comuns a EVITAR:
+- "Motoko bate em Yuu" quando a legenda só tem "[chute]" sem nome
+  (o agente real pode ser outro personagem que entrou na cena)
+- Assumir que quem FALA é quem AGE — fala e ação são entidades
+  diferentes
+- Inferir agente quando o transcript tem só som ("[soco]", "[grito]")
+  ou descritor passivo ("ele cai", "ela é atingida")
+
+NÃO ESCALE ACÕES (não force interpretação mais forte que o transcript):
+- "ela sugere"     ≠ "ela convence" / "ela manipula"
+- "ele aceita"      ≠ "ele cede" / "ele é forçado"
+- "ele comenta que viu antes" ≠ "ele examina de novo"
+- "ele menciona"   ≠ "ele revela" (a menos que seja revelação de fato)
+- "ele observa"    ≠ "ele descobre"
+
+Verbos no transcript devem ser PRESERVADOS no resumo, não amplificados.
+
+NÃO INVENTE EVENTOS NÃO VISTOS:
+Se o transcript mostra "X analisou Y antes" via diálogo (flashback verbal),
+NÃO escreva como se X analisasse Y de novo no presente. Distinga:
+  - AÇÃO ATUAL no transcript: "examina o pé"
+  - REFERÊNCIA a ação passada: "comenta o que viu da outra vez"
+Não converta referência verbal em ação narrativa nova.
 
 NOMES DOS PERSONAGENS:
 - Remova HONORÍFICOS japoneses do nome (-kun, -chan, -san, -sama,
