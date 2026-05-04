@@ -14,7 +14,7 @@ from providers import navy
 # literal. Bumpar SEMPRE que a mudança no prompt deve invalidar resultados
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
-SUMMARY_PROMPT_VERSION = "summary-v5-atribuicao-acoes-2026-04-28"
+SUMMARY_PROMPT_VERSION = "summary-v6-traducao-termos-mundo-2026-04-28"
 SHORT_SCRIPT_PROMPT_VERSION = "short-v5-pronomes-honorificos-2026-04-28"
 
 
@@ -95,6 +95,31 @@ NOMES DOS PERSONAGENS:
   narração pt-BR e atrapalha o tom do roteiro depois.
 - EXCEÇÃO: preserve só se o honorífico é literalmente o NOME DO
   PERSONAGEM (ex: "Onee-sama" usado como apelido fixo).
+
+TERMOS DO MUNDO (criaturas, itens, feitiços, organizações):
+A legenda em inglês frequentemente tem termos cunhados pra criaturas
+mágicas, itens, feitiços ou organizações. Esses NÃO são nomes próprios
+humanos — TRADUZA pra PT-BR coloquial quando houver equivalente natural.
+Mantenha apenas se o termo é único e não tem tradução clara.
+
+Exemplos de TRADUÇÃO PREFERIDA:
+- "Brushbuddy" / "Brush Buddy" → "pincel mágico" / "lagarta-pincel"
+- "Sigil" / "Magic Sigil" → "sigilo" / "sigilo mágico"
+- "Conjuration Seal" → "selo de conjuração"
+- "Sylph Shoes" → "sapatos de sílfide" / "sapatos voadores"
+- "Knight Moralis" / "Moralis Knights" → "Cavaleiros Moralis"
+- "Dragon Snake" → "serpente-dragão"
+- "Witch Cap" / "Pointed Hat" → "chapéu de bruxa" / "chapéu pontudo"
+- "Fireball" / "Sigil of Flame" → "bola de fogo" / "sigilo de fogo"
+
+REGRAS:
+- Traduza se o termo é DESCRITIVO (palavra inglesa composta com sentido).
+- Mantenha original se é nome próprio EXCLUSIVO sem cognato natural
+  (ex: "Bucchium", "Glittermon" — termos cunhados pelo anime).
+- Use o termo PT mais natural pra falante BR — evite estrangeirismo
+  desnecessário no resumo (que vira roteiro narrado em PT-BR).
+- Se a criatura/item APARECE COMO PERSONAGEM ATIVO, dê preferência ao
+  nome traduzido pra que a narração faça sentido pra quem nunca viu.
 
 TRANSCRIÇÃO:
 """
