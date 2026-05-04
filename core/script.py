@@ -14,7 +14,7 @@ from providers import navy
 # literal. Bumpar SEMPRE que a mudança no prompt deve invalidar resultados
 # anteriores (ex: nova regra, filosofia diferente). Edits cosméticos (typo,
 # reword, reorganização) NÃO precisam bumpar.
-SUMMARY_PROMPT_VERSION = "summary-v6-traducao-termos-mundo-2026-04-28"
+SUMMARY_PROMPT_VERSION = "summary-v7-speaker-tracking-2026-04-28"
 SHORT_SCRIPT_PROMPT_VERSION = "short-v5-pronomes-honorificos-2026-04-28"
 
 
@@ -54,6 +54,22 @@ REGRAS DE FIDELIDADE FACTUAL (CRÍTICO):
   certeza; diga "Futae, que quer a empresa" sem rotular relação).
 - Para CADA afirmação que você escreve, deveria conseguir apontar
   uma linha do transcript que sustenta. Na dúvida, OMITA.
+
+SPEAKER PREFIXO — DICA OFICIAL DA LEGENDA:
+Algumas linhas do transcript começam com `(NOME)` antes do diálogo.
+Esse `(NOME)` é o speaker da fala — vem DIRETO do campo Name do .ass
+que o ripper preencheu. É uma DICA CONFIÁVEL de quem está falando.
+
+  Ex: `(Coco) Você quer estudar na sala?`
+      `(Agott) Não, prefiro meu quarto.`
+
+Atribua falas/ações apenas conforme esses prefixos quando disponíveis.
+NÃO ignore essa informação. Quando linhas SEM prefixo aparecem entre
+linhas COM prefixo, mantenha o último speaker conhecido como referência
+até prefixo novo aparecer.
+
+Linhas sem prefixo `(NOME)`: legenda não preencheu speaker. Use as
+regras de atribuição de ações abaixo.
 
 ATRIBUIÇÃO DE AÇÕES — REGRA CRÍTICA (cuidado redobrado):
 Quando uma cena tem múltiplos personagens e a legenda mostra uma
@@ -103,10 +119,10 @@ humanos — TRADUZA pra PT-BR coloquial quando houver equivalente natural.
 Mantenha apenas se o termo é único e não tem tradução clara.
 
 Exemplos de TRADUÇÃO PREFERIDA:
-- "Brushbuddy" / "Brush Buddy" → "pincel mágico" / "lagarta-pincel"
+- "Brushbuddy" / "Brush Buddy" → "lagarta-pincel" (NÃO "pincel mágico")
 - "Sigil" / "Magic Sigil" → "sigilo" / "sigilo mágico"
 - "Conjuration Seal" → "selo de conjuração"
-- "Sylph Shoes" → "sapatos de sílfide" / "sapatos voadores"
+- "Sylph Shoes" → "sapatos voadores" (NÃO "sapatos de sílfide")
 - "Knight Moralis" / "Moralis Knights" → "Cavaleiros Moralis"
 - "Dragon Snake" → "serpente-dragão"
 - "Witch Cap" / "Pointed Hat" → "chapéu de bruxa" / "chapéu pontudo"

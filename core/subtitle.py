@@ -84,7 +84,13 @@ def parse_ass(lines) -> List[Cue]:
             continue
         start = _ass_ts_to_seconds(parts[1])
         end = _ass_ts_to_seconds(parts[2])
-        cues.append(Cue(start=start, end=end, text=text))
+        # Campo `Name` (parts[4]): nem todo ripper preenche. Quando preenche,
+        # é o speaker da linha — ouro pra evitar atribuição errada de falas
+        # no resumo. Limpa whitespace e descarta valores genéricos.
+        speaker = parts[4].strip()
+        if speaker.lower() in ("", "default", "speaker", "narrator", "?"):
+            speaker = ""
+        cues.append(Cue(start=start, end=end, text=text, speaker=speaker))
     return cues
 
 
@@ -112,6 +118,18 @@ def parse_srt(lines) -> List[Cue]:
     return cues
 
 
+def _format_cue_for_transcript(c: Cue) -> str:
+    """Formata uma cue pro transcript que vai ao LLM resumidor.
+
+    Quando há speaker do .ass Name, prefixa "(NOME) " — ajuda o LLM a
+    atribuir falas corretamente em cenas com múltiplos personagens.
+    Sem speaker, só o texto.
+    """
+    if c.speaker:
+        return f"({c.speaker}) {c.text}"
+    return c.text
+
+
 def load_subtitle(file_path: str) -> CleanedSubtitle:
     with open(file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
@@ -119,7 +137,9 @@ def load_subtitle(file_path: str) -> CleanedSubtitle:
         cues = parse_ass(lines)
     else:
         cues = parse_srt(lines)
-    plain = '\n'.join(c.text for c in cues)
+    # Inclui speaker quando o .ass preencheu o Name — fundamental pra resumo
+    # acurado em cenas multi-personagem.
+    plain = '\n'.join(_format_cue_for_transcript(c) for c in cues)
     return CleanedSubtitle(cues=cues, plain_text=plain)
 
 
@@ -316,7 +336,10 @@ def load_cues_for_matcher(file_path: str, exclude_signs: bool = True) -> List[Cu
         try:
             start = _ass_ts_to_seconds(parts[1])
             end = _ass_ts_to_seconds(parts[2])
-            cues.append(Cue(start=start, end=end, text=text))
+            speaker = parts[4].strip()
+            if speaker.lower() in ("", "default", "speaker", "narrator", "?"):
+                speaker = ""
+            cues.append(Cue(start=start, end=end, text=text, speaker=speaker))
         except Exception:
             continue
     return cues
