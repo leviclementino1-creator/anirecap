@@ -3,3 +3,9 @@ tkinterdnd2
 requests
 opencv-python
 faster-whisper
+
+# ─── Dev / build (opcional) ───
+# Pra gerar o Ancopy.exe via PyInstaller, descomenta abaixo ou roda:
+#     pip install pyinstaller
+# Veja BUILD.md pra instruções completas.
+# pyinstaller>=6.0
