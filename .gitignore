@@ -40,3 +40,9 @@ cache/
 *.trim.mp3
 *.speed.mp3
 *.log
+
+# ───────── Dados locais do usuário (overrides de teste + trilhas) ─────────
+music/
+override_short_script.txt
+override_short_script.bak
+override_plan.json
