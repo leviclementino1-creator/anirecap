@@ -100,7 +100,13 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Reduz tamanho excluindo módulos pesados não usados
+        # Reduz tamanho excluindo módulos pesados não usados.
+        # torch/torchvision/torchaudio: ~4GB! Eram puxados só por um
+        # `import torch` opcional em _pick_device (já trocado por
+        # ctranslate2). O app NÃO precisa de PyTorch.
+        "torch",
+        "torchvision",
+        "torchaudio",
         "matplotlib",
         "scipy",
         "numpy.testing",

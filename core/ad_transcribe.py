@@ -122,15 +122,18 @@ def transcribe_audio(
 
 
 def _pick_device() -> str:
-    """Tenta importar torch pra checar CUDA; fallback pra CPU."""
+    """Detecta CUDA via CTranslate2 (sem torch) — fallback pra CPU.
+
+    CTranslate2 é a engine do faster-whisper e já expõe contagem de GPUs.
+    Antes usávamos torch só pra isso, mas torch pesa 4GB no bundle do .exe
+    e é dependência desnecessária — CTranslate2 resolve nativamente.
+    """
     try:
-        import torch  # noqa
-        if torch.cuda.is_available():
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
             return "cuda"
     except Exception:
         pass
-    # faster-whisper também aceita 'cuda' via CTranslate2 sem torch, mas a
-    # forma segura de descobrir disponibilidade é via torch. Sem torch, usa CPU.
     return "cpu"
 
 
