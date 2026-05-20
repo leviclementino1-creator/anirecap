@@ -63,7 +63,10 @@ def load() -> dict:
     data = dict(_DEFAULTS)
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            # utf-8-sig tolera BOM no início do arquivo — alguns editores
+            # (e o PowerShell) gravam config.json com BOM, o que faria
+            # json.load falhar e o app perder TODAS as configs salvas.
+            with open(CONFIG_FILE, 'r', encoding='utf-8-sig') as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
                 for k, v in saved.items():
