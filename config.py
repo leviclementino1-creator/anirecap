@@ -11,7 +11,7 @@ import os
 from utils.paths import application_path
 
 APP_NAME = "AniRecap"
-VERSAO_ATUAL = "2.3.1"
+VERSAO_ATUAL = "2.3.2"
 
 # Repo do GitHub usado pelo auto-update (updater.py consulta
 # /releases/latest). Publicar release com tag "vX.Y.Z" + asset AniRecap.zip.
@@ -31,6 +31,10 @@ DEFAULT_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 CONFIG_FILE = os.path.join(application_path(), 'config.json')
+# Backup automático: escrito a cada save() com keys preenchidas; usado
+# pelo load() se o principal sumir ou corromper. Rede de segurança contra
+# qualquer cenário de "minhas keys sumiram".
+CONFIG_BACKUP = CONFIG_FILE + '.bak'
 
 _DEFAULTS = {
     # Provedor LLM: "navy" (api.navy, pago) ou "gemini" (API oficial do
@@ -71,21 +75,51 @@ _DEFAULTS = {
 }
 
 
+def _read_json(path: str):
+    """Lê um dict de `path`, ou None se não existe/corrompido.
+
+    utf-8-sig tolera BOM no início do arquivo — alguns editores (e o
+    PowerShell) gravam config.json com BOM, o que faria json.load falhar
+    e o app perder TODAS as configs salvas.
+    """
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            saved = json.load(f)
+        return saved if isinstance(saved, dict) else None
+    except Exception:
+        return None
+
+
+def _has_keys(cfg: dict) -> bool:
+    """True se o config tem pelo menos uma API key preenchida."""
+    return any(
+        (cfg.get(k) or "").strip()
+        for k in ("navy_api_key", "gemini_api_key", "elevenlabs_api_key")
+    )
+
+
 def load() -> dict:
     data = dict(_DEFAULTS)
-    if os.path.exists(CONFIG_FILE):
-        try:
-            # utf-8-sig tolera BOM no início do arquivo — alguns editores
-            # (e o PowerShell) gravam config.json com BOM, o que faria
-            # json.load falhar e o app perder TODAS as configs salvas.
-            with open(CONFIG_FILE, 'r', encoding='utf-8-sig') as f:
-                saved = json.load(f)
-            if isinstance(saved, dict):
-                for k, v in saved.items():
-                    if k in _DEFAULTS:
-                        data[k] = v
-        except Exception:
-            pass
+    saved = _read_json(CONFIG_FILE)
+
+    # Principal sumiu/corrompeu ou está sem nenhuma key? Tenta o backup;
+    # se o backup tem keys, restaura o principal a partir dele.
+    if saved is None or not _has_keys(saved):
+        backup = _read_json(CONFIG_BACKUP)
+        if backup is not None and _has_keys(backup):
+            saved = backup
+            try:
+                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(saved, f, indent=2, ensure_ascii=False)
+            except OSError:
+                pass
+
+    if isinstance(saved, dict):
+        for k, v in saved.items():
+            if k in _DEFAULTS:
+                data[k] = v
     return data
 
 
@@ -96,3 +130,12 @@ def save(cfg: dict) -> None:
             merged[k] = v
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(merged, f, indent=2, ensure_ascii=False)
+
+    # Backup só quando há keys — um save vazio nunca sobrescreve um
+    # backup bom.
+    if _has_keys(merged):
+        try:
+            with open(CONFIG_BACKUP, 'w', encoding='utf-8') as f:
+                json.dump(merged, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
