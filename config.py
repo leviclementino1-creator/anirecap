@@ -11,7 +11,7 @@ import os
 from utils.paths import application_path
 
 APP_NAME = "AniRecap"
-VERSAO_ATUAL = "2.1.1"
+VERSAO_ATUAL = "2.2.0"
 
 # Repo do GitHub usado pelo auto-update (updater.py consulta
 # /releases/latest). Publicar release com tag "vX.Y.Z" + asset AniRecap.zip.

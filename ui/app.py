@@ -48,8 +48,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.set_default_color_theme("blue")
 
         self.title(f"{config.APP_NAME} v{config.VERSAO_ATUAL}")
-        self.geometry("650x550")
-        self.resizable(False, False)
+        self.geometry("720x600")
+        self.minsize(660, 540)
+        self.resizable(True, True)
 
         self.cfg = config.load()
         self.selected_model = self.cfg.get("selected_model") or config.DEFAULT_MODEL
@@ -106,7 +107,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         # topo: seletor de arquivo + engrenagem
         self.top_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.top_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        self.top_frame.grid(row=0, column=0, padx=20, pady=(16, 12), sticky="ew")
 
         self.btn_select = ctk.CTkButton(
             self.top_frame, text="Carregar .SRT / .ASS / .MKV",
@@ -152,19 +153,22 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.btn_version.pack(side="right", padx=(0, 4))
 
-        # log central
+        # log central — expande com a janela (janela agora é redimensionável)
         self.log_box = ctk.CTkTextbox(
             self, font=style.FONT_LOG,
             fg_color=style.BG_DARK, text_color=style.LOG_TEXT,
         )
-        self.log_box.grid(row=1, column=0, padx=20, pady=(0, 84), sticky="nsew")
+        self.log_box.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="nsew")
         self.log_box.configure(state="disabled")
 
-        # Barra de progresso do render — fica escondida até renderizar.
+        # Barra de progresso do render — linha própria do grid, escondida
+        # até renderizar (grid_remove preserva a configuração de posição).
         # Determinate durante o corte dos clipes (i/n), indeterminate no
         # render final (duração desconhecida).
         self.progress_bar = ctk.CTkProgressBar(self, height=10, corner_radius=4)
         self.progress_bar.set(0)
+        self.progress_bar.grid(row=2, column=0, padx=20, pady=(0, 8), sticky="ew")
+        self.progress_bar.grid_remove()
 
         self.btn_copy = ctk.CTkButton(
             self, text="📋", command=self._copy_to_clipboard,
@@ -174,48 +178,54 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.btn_copy.place_forget()
 
-        # rodapé (5 ações): resumo | short | narração | plano | limpar
+        # Rodapé: etapas do pipeline à esquerda (na ordem de uso) e Limpar
+        # isolado à direita. Frame + pack = espaçamento estável em qualquer
+        # largura de janela (antes era .place() com percentuais fixos, que
+        # desalinhava os botões).
+        self.footer = ctk.CTkFrame(self, fg_color="transparent")
+        self.footer.grid(row=3, column=0, padx=20, pady=(0, 16), sticky="ew")
+
         self.btn_ai = ctk.CTkButton(
-            self, text="✨ Resumo", command=self._generate_summary,
+            self.footer, text="✨ Resumo", command=self._generate_summary,
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=95, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=95, height=34, state="disabled",
         )
-        self.btn_ai.place(relx=0.03, rely=0.96, anchor="sw")
+        self.btn_ai.pack(side="left")
 
         self.btn_short = ctk.CTkButton(
-            self, text="📝 Short", command=self._generate_short,
+            self.footer, text="📝 Short", command=self._generate_short,
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=90, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=88, height=34, state="disabled",
         )
-        self.btn_short.place(relx=0.19, rely=0.96, anchor="sw")
+        self.btn_short.pack(side="left", padx=(8, 0))
 
         self.btn_tts = ctk.CTkButton(
-            self, text="🎙️ Narração", command=self._generate_tts,
+            self.footer, text="🎙️ Narração", command=self._generate_tts,
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=115, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=110, height=34, state="disabled",
         )
-        self.btn_tts.place(relx=0.34, rely=0.96, anchor="sw")
+        self.btn_tts.pack(side="left", padx=(8, 0))
 
         self.btn_plano = ctk.CTkButton(
-            self, text="🎬 Plano", command=self._generate_plan,
+            self.footer, text="🎬 Plano", command=self._generate_plan,
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=95, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=90, height=34, state="disabled",
         )
-        self.btn_plano.place(relx=0.54, rely=0.96, anchor="sw")
+        self.btn_plano.pack(side="left", padx=(8, 0))
 
         self.btn_meta = ctk.CTkButton(
-            self, text="📋 Meta", command=self._generate_metadata,
+            self.footer, text="📋 Meta", command=self._generate_metadata,
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=85, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=82, height=34, state="disabled",
         )
-        self.btn_meta.place(relx=0.71, rely=0.96, anchor="sw")
+        self.btn_meta.pack(side="left", padx=(8, 0))
 
         self.btn_clear = ctk.CTkButton(
-            self, text="Limpar", command=self._clear_data,
+            self.footer, text="Limpar", command=self._clear_data,
             fg_color=style.BTN_DANGER_FG, hover_color=style.BTN_DANGER_HOVER,
-            font=style.FONT_BTN_SECONDARY, width=75, height=32, state="disabled",
+            font=style.FONT_BTN_SECONDARY, width=75, height=34, state="disabled",
         )
-        self.btn_clear.place(relx=0.97, rely=0.96, anchor="se")
+        self.btn_clear.pack(side="right")
 
     # --------------------------------------------------------------- settings
     def _open_settings(self):
@@ -1735,9 +1745,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         if determinate:
             self.progress_bar.set(0)
-        self.progress_bar.place(
-            relx=0.5, rely=0.868, anchor="center", relwidth=0.9,
-        )
+        self.progress_bar.grid()  # reaparece na posição configurada no layout
         if not determinate:
             self.progress_bar.start()
 
@@ -1749,7 +1757,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.progress_bar.stop()
         except Exception:
             pass
-        self.progress_bar.place_forget()
+        self.progress_bar.grid_remove()
 
     def _finish_plan_and_render(self, plan, scenes=None):
         """Parte final do pipeline: log do plano + cut + captions + render.
