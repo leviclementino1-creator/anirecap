@@ -60,14 +60,18 @@ class _ThumbLoader:
         self._mkv = mkv_path
         self._bin = binaries_dir
         self._q: queue.Queue = queue.Queue()
+        # Fila prioritária: troca de cena fura a fila — senão o thumbnail
+        # novo espera atrás de dezenas de extrações do seletor e parece
+        # que "não atualizou".
+        self._qhi: queue.Queue = queue.Queue()
         self.closed = False
         for _ in range(workers):
             t = threading.Thread(target=self._work, daemon=True)
             t.start()
 
-    def submit(self, t: float, callback):
+    def submit(self, t: float, callback, priority: bool = False):
         """callback(path_or_None) é chamado na thread da UI."""
-        self._q.put((t, callback))
+        (self._qhi if priority else self._q).put((t, callback))
 
     def close(self):
         self.closed = True
@@ -75,9 +79,12 @@ class _ThumbLoader:
     def _work(self):
         while not self.closed:
             try:
-                t, cb = self._q.get(timeout=0.4)
+                t, cb = self._qhi.get_nowait()
             except queue.Empty:
-                continue
+                try:
+                    t, cb = self._q.get(timeout=0.4)
+                except queue.Empty:
+                    continue
             path = thumbs.extract_thumb(self._mkv, t, self._bin)
             if self.closed:
                 return
@@ -97,8 +104,12 @@ class PlanEditor(ctk.CTkToplevel):
         binaries_dir: str = "",
         on_render=None,        # callback(plan) quando usuário clica Renderizar
         on_save_override=None, # callback(plan) quando usuário fixa o plano
+        from_override: bool = False,   # plano veio de override_plan.json
+        on_clear_override=None,        # callback() pra destravar e regerar
     ):
         super().__init__(parent)
+        self._from_override = from_override
+        self._on_clear_override = on_clear_override
         self._matches = plan
         self._scenes = sorted(scenes or [])
         self._mkv = mkv_path
@@ -137,10 +148,30 @@ class PlanEditor(ctk.CTkToplevel):
     # ---------------------------------------------------------------- layout
     def _build_layout(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
+
+        # Banner de plano fixado — sem isso o override é uma armadilha
+        # silenciosa: o usuário regenera o plano e recebe sempre o mesmo,
+        # sem entender por quê.
+        if self._from_override:
+            banner = ctk.CTkFrame(self, fg_color="#4a3800", corner_radius=6)
+            banner.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+            ctk.CTkLabel(
+                banner,
+                text="📌 Este plano está FIXADO (override) — o matcher não roda "
+                     "enquanto ele existir.",
+                font=style.FONT_SMALL, text_color="#ffd75e",
+            ).pack(side="left", padx=10, pady=6)
+            if self._on_clear_override:
+                ctk.CTkButton(
+                    banner, text="🔓 Destravar e regerar", width=150, height=26,
+                    command=self._clear_override,
+                    fg_color="#6b5200", hover_color="#7d6100",
+                    font=style.FONT_SMALL,
+                ).pack(side="right", padx=8, pady=4)
 
         ctk.CTkLabel(
             header, text="🎬 Plano de cortes", font=style.FONT_TITLE,
@@ -159,14 +190,14 @@ class PlanEditor(ctk.CTkToplevel):
         hint.pack(side="right")
 
         self._scroll = ctk.CTkScrollableFrame(self, fg_color=style.BG_DARK)
-        self._scroll.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
+        self._scroll.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 8))
         self._scroll.grid_columnconfigure(0, weight=1)
 
         for i, m in enumerate(self._matches):
             self._build_card(i, m)
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.grid(row=2, column=0, sticky="ew", padx=16, pady=(4, 14))
+        footer.grid(row=3, column=0, sticky="ew", padx=16, pady=(4, 14))
 
         self._btn_override = ctk.CTkButton(
             footer, text="💾 Fixar plano (override)",
@@ -270,10 +301,10 @@ class PlanEditor(ctk.CTkToplevel):
         for i, m in enumerate(self._matches):
             self._queue_thumb(i, m.video_start)
 
-    def _queue_thumb(self, idx: int, t: float):
+    def _queue_thumb(self, idx: int, t: float, priority: bool = False):
         def _apply(path):
             self._set_thumb_image(self._cards[idx]["thumb"], path, _CARD_THUMB, key=f"card{idx}")
-        self._loader.submit(t, _apply)
+        self._loader.submit(t, _apply, priority=priority)
 
     def _set_thumb_image(self, label, path, size, key):
         if self._loader.closed:
@@ -330,9 +361,10 @@ class PlanEditor(ctk.CTkToplevel):
         w = self._cards[idx]
         w["card"].configure(border_color=self._card_border(idx))
         w["time"].configure(text=self._time_text(m))
-        w["thumb"].configure(image=None, text="…")
-        self._images.pop(f"card{idx}", None)
-        self._queue_thumb(idx, m.video_start)
+        # Mantém a imagem antiga até a nova chegar (sem flash de "…") e
+        # fura a fila do loader — a cena recém-escolhida já está no cache
+        # de disco (o seletor acabou de exibi-la), então troca em <1s.
+        self._queue_thumb(idx, m.video_start, priority=True)
 
     # ----------------------------------------------------- seletor de cenas
     def _candidates_around(self, m, center: float) -> list:
@@ -569,6 +601,18 @@ class PlanEditor(ctk.CTkToplevel):
         if cb:
             cb(self._matches)
 
+    def _clear_override(self):
+        """Fecha o editor e pede pro app apagar o override e regerar o plano."""
+        cb = self._on_clear_override
+        self._loader.close()
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+        if cb:
+            cb()
+
     def _cancel(self):
         self._loader.close()
         try:
@@ -581,6 +625,7 @@ class PlanEditor(ctk.CTkToplevel):
 def open_plan_editor(
     parent, plan, scenes, mkv_path,
     binaries_dir="", on_render=None, on_save_override=None,
+    from_override=False, on_clear_override=None,
 ) -> PlanEditor:
     """Abre o editor. Deve ser chamado na thread da UI (via parent.after)."""
     return PlanEditor(
@@ -588,4 +633,6 @@ def open_plan_editor(
         binaries_dir=binaries_dir,
         on_render=on_render,
         on_save_override=on_save_override,
+        from_override=from_override,
+        on_clear_override=on_clear_override,
     )

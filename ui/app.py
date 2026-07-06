@@ -1401,7 +1401,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             use_cache=True,
                         )
                         self.after(
-                            0, self._open_plan_editor, plan, scenes_for_override,
+                            0, self._open_plan_editor, plan,
+                            scenes_for_override, True,
                         )
                         return
                 except Exception as e:
@@ -1685,13 +1686,18 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda: self.btn_clear.configure(state="normal"))
 
     # ------------------------------------------- Editor visual do plano
-    def _open_plan_editor(self, plan, scenes):
+    def _open_plan_editor(self, plan, scenes, from_override=False):
         """Abre o editor de plano (thread da UI). O render só acontece
         quando o usuário clica 🎬 Renderizar dentro do editor."""
         self.scene_plan = plan
         low_conf = sum(1 for m in plan if 1 <= m.confidence <= 2)
         msg = f"🎬 Plano com {len(plan)} beats pronto — revise no editor."
-        if low_conf:
+        if from_override:
+            msg = (
+                f"📌 Plano FIXADO carregado do override ({len(plan)} beats). "
+                "Use 🔓 Destravar no editor pra voltar ao matcher."
+            )
+        elif low_conf:
             msg += f" ⚠ {low_conf} beat(s) com confiança baixa (borda vermelha)."
         self.log(msg)
         plan_editor.open_plan_editor(
@@ -1702,7 +1708,21 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             binaries_dir=self.cfg.get("binaries_dir", ""),
             on_render=lambda p: self._start_render(p, scenes),
             on_save_override=self._save_override_plan,
+            from_override=from_override,
+            on_clear_override=self._clear_override_and_regen,
         )
+
+    def _clear_override_and_regen(self):
+        """Botão 🔓 do editor: apaga o override e re-roda o plano do zero."""
+        from utils.paths import application_path
+        path = os.path.join(application_path(), "override_plan.json")
+        try:
+            os.remove(path)
+        except OSError as e:
+            self.log(f"[AVISO] Não consegui apagar o override: {e}")
+            return
+        self.log("🔓 Override apagado — regerando plano com o matcher...")
+        self._generate_plan()
 
     def _start_render(self, plan, scenes):
         """Callback do botão Renderizar do editor (thread da UI)."""
