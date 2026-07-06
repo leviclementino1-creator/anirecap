@@ -40,6 +40,10 @@ hiddenimports += collect_submodules("tkinterdnd2")
 # opencv-python: usa namespace cv2 mas tem submódulos dinâmicos
 hiddenimports += [
     "cv2",
+    # CTkImage cria ImageTk.PhotoImage sob demanda — import lazy que o
+    # PyInstaller não rastreia sozinho. Sem isso, thumbnails do editor
+    # de plano ficam em branco no exe.
+    "PIL.ImageTk",
 ]
 
 # faster-whisper depende de ctranslate2 e tokenizers — se instalado
@@ -110,7 +114,6 @@ a = Analysis(
         "matplotlib",
         "scipy",
         "numpy.testing",
-        "PIL.ImageTk",
         "tkinter.test",
         "test",
         "unittest",

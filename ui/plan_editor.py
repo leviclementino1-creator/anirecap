@@ -286,7 +286,13 @@ class PlanEditor(ctk.CTkToplevel):
             else:
                 label.configure(text="sem preview")
         except Exception:
-            pass  # janela fechada no meio do load
+            # Falha visível > falha silenciosa: sem isso, um erro de
+            # CTkImage (ex: PIL.ImageTk fora do bundle) deixava o card
+            # em "…" pra sempre sem nenhuma pista.
+            try:
+                label.configure(text="⚠ erro img")
+            except Exception:
+                pass  # janela fechada no meio do load
 
     # ------------------------------------------------------------ estado/UI
     def _card_border(self, idx: int) -> str:

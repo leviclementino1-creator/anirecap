@@ -58,7 +58,7 @@ a = Analysis(
     excludes=[
         "torch", "torchvision", "torchaudio",
         "matplotlib", "scipy", "numpy.testing",
-        "PIL.ImageTk", "tkinter.test", "test", "unittest",
+        "tkinter.test", "test", "unittest",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
