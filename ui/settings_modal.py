@@ -41,10 +41,40 @@ def open_settings(parent, current: dict, on_saved):
             entry.insert(0, value)
         return entry
 
+    # =================== Provedor de IA (roteiro/matcher) ===================
+    provider_section = ctk.CTkLabel(
+        container, text="🤖 Provedor de IA (resumo, roteiro, plano)",
+        font=style.FONT_LABEL,
+    )
+    provider_section.pack(anchor="w", pady=(0, 4))
+
+    provider_hint = ctk.CTkLabel(
+        container,
+        text="Navy AI = pago, mais estável · Gemini (free) = API oficial do Google,\n"
+             "de graça — pegue sua key em aistudio.google.com/apikey",
+        font=("Inter", 10), text_color="gray", justify="left",
+        wraplength=420,
+    )
+    provider_hint.pack(anchor="w", pady=(0, 6))
+
+    provider_var = ctk.StringVar(
+        value="Gemini (free)" if current.get("llm_provider") == "gemini" else "Navy AI"
+    )
+    provider_seg = ctk.CTkSegmentedButton(
+        container, values=["Navy AI", "Gemini (free)"],
+        variable=provider_var, font=style.FONT_SMALL,
+    )
+    provider_seg.pack(anchor="w", pady=(0, 4), fill="x")
+
     entry_navy = add_field("Navy AI — API Key", current.get("navy_api_key", ""), show="*")
     entry_navy_url = add_field(
         "Navy AI — Base URL",
         current.get("navy_base_url", config.DEFAULT_NAVY_BASE_URL),
+    )
+    entry_gemini = add_field(
+        "Google Gemini — API Key (free)",
+        current.get("gemini_api_key", ""),
+        show="*",
     )
     entry_el_key = add_field(
         "ElevenLabs — API Key",
@@ -327,8 +357,12 @@ def open_settings(parent, current: dict, on_saved):
 
         new_cfg = dict(current)
         new_cfg.update({
+            "llm_provider": (
+                "gemini" if provider_var.get() == "Gemini (free)" else "navy"
+            ),
             "navy_api_key": entry_navy.get().strip(),
             "navy_base_url": entry_navy_url.get().strip() or config.DEFAULT_NAVY_BASE_URL,
+            "gemini_api_key": entry_gemini.get().strip(),
             "elevenlabs_api_key": entry_el_key.get().strip(),
             "elevenlabs_voice_id": entry_el_voice.get().strip(),
             "elevenlabs_model_id": entry_el_model.get().strip() or config.DEFAULT_ELEVENLABS_MODEL,

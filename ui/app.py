@@ -56,6 +56,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.is_loading = False
         self.loading_dots_count = 0
+        self._loading_line_drawn = False  # a última linha do log é o spinner?
 
         try:
             self.iconbitmap(resource_path("AniRecap_icon.ico"))
@@ -223,6 +224,23 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _on_settings_saved(self, new_cfg):
         self.cfg = new_cfg
         self.log("Configurações salvas.")
+
+    # ------------------------------------------------------------ provedor LLM
+    # Navy (pago) e Gemini oficial (free tier) expõem o MESMO protocolo
+    # OpenAI-compat — todo o pipeline (resumo, roteiro, matcher, glossário,
+    # AD, nomes, metadata) só precisa de (key, base_url) do provedor ativo.
+    def _llm_key(self) -> str:
+        if self.cfg.get("llm_provider") == "gemini":
+            return self.cfg.get("gemini_api_key") or ""
+        return self.cfg.get("navy_api_key") or ""
+
+    def _llm_url(self) -> str:
+        if self.cfg.get("llm_provider") == "gemini":
+            return config.DEFAULT_GEMINI_BASE_URL
+        return self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL
+
+    def _llm_provider_name(self) -> str:
+        return "Gemini (free)" if self.cfg.get("llm_provider") == "gemini" else "Navy AI"
 
     def _open_music_picker(self):
         music_picker.open_music_picker(self, self.cfg, self._on_settings_saved)
@@ -439,18 +457,18 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 f"🎙️ AD em cache ({len(cues)} segmentos, modelo: {ad_model})."
             )
         else:
-            api_key = self.cfg.get("navy_api_key") or ""
+            api_key = self._llm_key()
             if not api_key:
                 self.after(
                     0, self.log,
-                    "[ERRO] Sem API Key Navy — não consigo transcrever AD via LLM."
+                    f"[ERRO] Sem API key do {self._llm_provider_name()} — não consigo transcrever AD via LLM."
                 )
                 return []
 
-            base_url = self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL
+            base_url = self._llm_url()
             self.after(
                 0, self.log,
-                f"🎙️ Enviando áudio AD pra {ad_model} via Navy "
+                f"🎙️ Enviando áudio AD pra {ad_model} via {self._llm_provider_name()} "
                 f"(compacta pra ~6MB + upload + transcreve + traduz em uma call)..."
             )
 
@@ -467,7 +485,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     progress=_progress,
                 )
             except Exception as e:
-                self.after(0, self.log, f"[ERRO] Transcrição Navy falhou: {e}")
+                self.after(0, self.log, f"[ERRO] Transcrição AD via {self._llm_provider_name()} falhou: {e}")
                 return []
 
             cues = result.cues
@@ -573,14 +591,14 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if cached_map:
                 mapping = cached_map.get("mapping") or {}
             else:
-                api_key = self.cfg.get("navy_api_key") or ""
+                api_key = self._llm_key()
                 if not api_key:
                     self.after(
                         0, self.log,
-                        "[INFO] Sem API key Navy — pulando mapping de nomes."
+                        f"[INFO] Sem API key do {self._llm_provider_name()} — pulando mapping de nomes."
                     )
                     return
-                base_url = self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL
+                base_url = self._llm_url()
                 self.after(
                     0, self.log,
                     f"🔄 Mapeando {len(detected)} nomes detectados → canônicos via Gemini..."
@@ -684,8 +702,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # ------------------------------------------------------------- LLM: resumo
     def _generate_summary(self):
-        if not self.cfg.get("navy_api_key"):
-            self.log("[ERRO] Insira sua API Key da Navy AI nas configurações (⚙️)")
+        if not self._llm_key():
+            self.log(f"[ERRO] Configure a API key do {self._llm_provider_name()} em ⚙️")
             return
         if not self.transcript_text.strip():
             self.log("[ERRO] Carregue uma legenda primeiro.")
@@ -736,8 +754,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             stream_err = None
             try:
                 chunks = script.generate_summary_stream(
-                    api_key=self.cfg["navy_api_key"],
-                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    api_key=self._llm_key(),
+                    base_url=self._llm_url(),
                     model=self.selected_model,
                     transcript=self.transcript_text,
                 )
@@ -766,8 +784,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
                 try:
                     retry = script.generate_summary(
-                        api_key=self.cfg["navy_api_key"],
-                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        api_key=self._llm_key(),
+                        base_url=self._llm_url(),
                         model=self.selected_model,
                         transcript=self.transcript_text,
                     )
@@ -806,8 +824,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # --------------------------------------------------- LLM: roteiro short
     def _generate_short(self):
-        if not self.cfg.get("navy_api_key"):
-            self.log("[ERRO] Insira sua API Key da Navy AI em ⚙️")
+        if not self._llm_key():
+            self.log(f"[ERRO] Configure a API key do {self._llm_provider_name()} em ⚙️")
             return
         if not self.summary_text.strip():
             self.log("[ERRO] Gere o resumo primeiro (✨ Resumo).")
@@ -880,8 +898,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             stream_err = None
             try:
                 chunks = script.generate_short_script_stream(
-                    api_key=self.cfg["navy_api_key"],
-                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    api_key=self._llm_key(),
+                    base_url=self._llm_url(),
                     model=self.selected_model,
                     summary=self.summary_text,
                 )
@@ -914,8 +932,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 )
                 try:
                     retry = script.generate_short_script(
-                        api_key=self.cfg["navy_api_key"],
-                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        api_key=self._llm_key(),
+                        base_url=self._llm_url(),
                         model=self.selected_model,
                         summary=self.summary_text,
                     )
@@ -994,17 +1012,46 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def _handle_llm_error(self, err):
         self.is_loading = False
         msg = str(err)
-        if "429" in msg:
+        low = msg.lower()
+        provider = self._llm_provider_name()
+        quota_markers = (
+            "429", "quota", "exceeded", "rate limit", "insufficient",
+            "resource_exhausted", "limite de uso",
+        )
+        if any(m in low for m in quota_markers):
+            if self.cfg.get("llm_provider") == "gemini":
+                dica = (
+                    "O free tier renova o limite diário à meia-noite (horário "
+                    "do Pacífico). Tente o modelo -lite no botão de modelo, "
+                    "aguarde uns minutos, ou volte pro Navy no ⚙️."
+                )
+            else:
+                dica = (
+                    "Seus tokens do Navy acabaram ou o limite foi atingido. "
+                    "Dá pra usar o Gemini DE GRAÇA: pegue uma key em "
+                    "aistudio.google.com/apikey e troque o provedor no ⚙️."
+                )
             self.after(
                 0, self.log,
-                f"\n[AVISO]: Limite do {self.selected_model} atingido! "
-                f"Tente alternar o modelo no botão abaixo. ⏳",
+                f"🚫 SEM CRÉDITOS / LIMITE ATINGIDO no {provider}! {dica}",
+            )
+        elif "401" in msg:
+            self.after(
+                0, self.log,
+                f"🔑 API key do {provider} inválida ou expirada — confira no ⚙️.",
             )
         else:
-            self.after(0, self.log, f"\n[ERRO IA]: {msg}")
+            self.after(0, self.log, f"[ERRO IA · {provider}]: {msg}")
 
     # ------------------------------------------------------------------ log
     def log(self, message):
+        # Se o spinner de loading está ativo, mata ele ANTES de escrever.
+        # Sem isso, a animação (que deleta e reescreve a última linha a cada
+        # 300ms) picota a mensagem — era a causa do log embaralhado tipo
+        # "Resumindo episódio..eeded)" quando um erro de quota chegava.
+        if self.is_loading:
+            self.is_loading = False
+            self._clear_loading_line()
         self._log_queue.append(f"\n> {message}")
         if not self._log_animating:
             self._log_animating = True
@@ -1038,19 +1085,27 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.loading_dots_count = (self.loading_dots_count + 1) % 4
             dots = "." * self.loading_dots_count
             self.log_box.configure(state="normal")
-            line_count = int(self.log_box.index("end-1c").split(".")[0])
-            self.log_box.delete(f"{line_count}.0", "end")
+            # Só deleta a última linha se ela É a linha de loading (desenhada
+            # por um tick anterior). Sem essa checagem, o primeiro tick comia
+            # a última mensagem real do log.
+            if self._loading_line_drawn:
+                line_count = int(self.log_box.index("end-1c").split(".")[0])
+                self.log_box.delete(f"{line_count}.0", "end")
             self.log_box.insert("end", f"\n> {self.loading_label}{dots}")
+            self._loading_line_drawn = True
             self.log_box.configure(state="disabled")
             self.log_box.see("end")
             self.after(300, self._update_loading_animation)
 
     def _clear_loading_line(self):
         """Remove a linha atual de loading — útil quando a etapa termina sem stream."""
+        if not self._loading_line_drawn:
+            return
         self.log_box.configure(state="normal")
         line_count = int(self.log_box.index("end-1c").split(".")[0])
         self.log_box.delete(f"{line_count}.0", "end")
         self.log_box.configure(state="disabled")
+        self._loading_line_drawn = False
 
     # --------------------------------------------------------------- TTS
     def _generate_tts(self):
@@ -1213,8 +1268,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not self.short_script_text.strip():
             self.log("[ERRO] Gere o roteiro primeiro (📝 Short).")
             return
-        if not self.cfg.get("navy_api_key"):
-            self.log("[ERRO] Configure a Navy API key em ⚙️")
+        if not self._llm_key():
+            self.log(f"[ERRO] Configure a API key do {self._llm_provider_name()} em ⚙️")
             return
 
         self.btn_meta.configure(state="disabled")
@@ -1228,8 +1283,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, self.log, "📋 Pedindo títulos + descrição ao LLM...")
             md = core_metadata.generate_metadata(
                 short_script=self.short_script_text,
-                api_key=self.cfg["navy_api_key"],
-                base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                api_key=self._llm_key(),
+                base_url=self._llm_url(),
                 model=self.selected_model,
             )
             self.is_loading = False
@@ -1259,8 +1314,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if not self.mkv_path or not os.path.isfile(self.mkv_path):
             self.log("[ERRO] Arquivo .mkv original não encontrado. Plano precisa do vídeo.")
             return
-        if not self.cfg.get("navy_api_key"):
-            self.log("[ERRO] Configure a Navy API key em ⚙️")
+        if not self._llm_key():
+            self.log(f"[ERRO] Configure a API key do {self._llm_provider_name()} em ⚙️")
             return
 
         self.btn_plano.configure(state="disabled")
@@ -1490,8 +1545,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             summary=self.summary_text,
                             short_script=self.short_script_text,
                             ad_cues=self.ad_cues,
-                            api_key=self.cfg["navy_api_key"],
-                            base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                            api_key=self._llm_key(),
+                            base_url=self._llm_url(),
                             model=self.selected_model,
                         )
                         if visual_glossary:
@@ -1509,8 +1564,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 plan = matcher.match_beats_to_cues(
                     beats=beats, cues=cues_for_match,
                     summary=self.summary_text,
-                    api_key=self.cfg["navy_api_key"],
-                    base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                    api_key=self._llm_key(),
+                    base_url=self._llm_url(),
                     model=self.selected_model,
                     scene_changes=scenes,
                     pad_before=0.0,
@@ -1567,8 +1622,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     plan = matcher.match_beats_to_cues(
                         beats=beats, cues=cues_for_match,
                         summary=self.summary_text,
-                        api_key=self.cfg["navy_api_key"],
-                        base_url=self.cfg.get("navy_base_url") or config.DEFAULT_NAVY_BASE_URL,
+                        api_key=self._llm_key(),
+                        base_url=self._llm_url(),
                         model=self.selected_model,
                         scene_changes=scenes,
                         audio_envelope=audio_envelope,
@@ -1609,6 +1664,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, self._open_plan_editor, plan, scenes)
             return
 
+        except NavyError as e:
+            self._handle_llm_error(e)
         except Exception as e:
             self.is_loading = False
             self.after(0, self._clear_loading_line)

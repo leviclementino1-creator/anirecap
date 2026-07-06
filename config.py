@@ -11,7 +11,7 @@ import os
 from utils.paths import application_path
 
 APP_NAME = "AniRecap"
-VERSAO_ATUAL = "2.0.0"
+VERSAO_ATUAL = "2.1.0"
 
 # Repo do GitHub usado pelo auto-update (updater.py consulta
 # /releases/latest). Publicar release com tag "vX.Y.Z" + asset AniRecap.zip.
@@ -22,6 +22,10 @@ GITHUB_REPO = "leviclementino1-creator/anirecap"
 CHECK_UPDATES = True
 
 DEFAULT_NAVY_BASE_URL = "https://api.navy/v1"
+# Endpoint OpenAI-compatível da API oficial do Gemini (Google AI Studio).
+# Free tier: key grátis em https://aistudio.google.com/apikey — o mesmo
+# cliente chat/completions do Navy funciona sem mudanças.
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
@@ -29,8 +33,12 @@ DEFAULT_ELEVENLABS_MODEL = "eleven_multilingual_v2"
 CONFIG_FILE = os.path.join(application_path(), 'config.json')
 
 _DEFAULTS = {
+    # Provedor LLM: "navy" (api.navy, pago) ou "gemini" (API oficial do
+    # Google, free tier). Ambos servem os mesmos modelos gemini-2.5-*.
+    "llm_provider": "navy",
     "navy_api_key": "",
     "navy_base_url": DEFAULT_NAVY_BASE_URL,
+    "gemini_api_key": "",
     "elevenlabs_api_key": "",
     "elevenlabs_voice_id": "",
     "elevenlabs_model_id": DEFAULT_ELEVENLABS_MODEL,
