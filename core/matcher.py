@@ -20,7 +20,7 @@ from providers import navy
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v10-confidence-runnerup-2026-07-06"
+MATCHER_PROMPT_VERSION = "matcher-v10.1-retry-missing-2026-07-06"
 
 
 MATCHER_PROMPT = """\
@@ -230,6 +230,33 @@ uma entrada "matches" com EXATAMENTE {n_beats} itens (beats de 1 a {n_beats}):
 }}
 
 Sem markdown, sem texto antes ou depois do JSON.
+"""
+
+
+# Prompt da REPESCAGEM: quando a resposta principal vem truncada (comum no
+# Gemini 2.5 quando os tokens de raciocínio estouram o teto), os beats sem
+# match ganham uma segunda chamada focada — só eles, mesma tabela de cenas.
+RETRY_MISSING_PROMPT = """\
+Você é um editor de vídeo casando narração com cenas de um episódio de anime.
+Na etapa anterior alguns beats ficaram SEM match. Complete APENAS os beats
+listados abaixo.
+
+CONTEXTO (resumo do episódio):
+{summary}
+
+CENAS DO EPISÓDIO (o cue_id é o número em CUE=N):
+{cues_table}
+
+BEATS FALTANTES (retorne um match pra CADA um, usando o número EXATO do beat):
+{beats_table}
+
+REGRAS:
+- Escolha o cue_id cuja cena melhor representa VISUALMENTE o que o beat narra.
+- "confidence": 1-5 (5 = certeza). "runner_up_cue_id": segunda opção ou null.
+- "why" curto (3-7 palavras), sem aspas duplas dentro do valor.
+
+SAÍDA: APENAS JSON válido, sem markdown:
+{{"matches": [{{"beat": N, "cue_id": N, "confidence": N, "runner_up_cue_id": N, "why": "..."}}]}}
 """
 
 
@@ -746,6 +773,11 @@ def match_beats_to_cues(
         # entre runs idênticas). 0.3 mantém o LLM ousando em escolhas
         # visuais mas sem cair em alucinações inconsistentes.
         temperature=0.3,
+        # 32k: no Gemini 2.5 o max_tokens inclui os tokens de RACIOCÍNIO
+        # (thinking). Com 8192, prompts grandes faziam o modelo gastar o
+        # teto pensando e a resposta visível vinha decapitada no meio do
+        # JSON (beats 18+ sem match). 32k dá folga pros dois.
+        max_tokens=32768,
     )
 
     # Dump da resposta crua pra cross-reference com o prompt
@@ -769,6 +801,36 @@ def match_beats_to_cues(
     # raw_matches = _validate_matches_semantically(raw_matches, grouped)
 
     by_beat = {int(m.get("beat")): m for m in raw_matches if m.get("beat") is not None}
+
+    # REPESCAGEM: se a resposta veio truncada/incompleta, faz uma segunda
+    # chamada SÓ com os beats que faltaram. Muito melhor que o fallback de
+    # continuidade (que colava N beats na mesma cena repetida).
+    missing_beats = [b for b in beats if b.index not in by_beat]
+    if missing_beats:
+        try:
+            retry_prompt = RETRY_MISSING_PROMPT.format(
+                summary=(summary or "(sem resumo)").strip()[:2000],
+                cues_table=_cues_table(
+                    grouped,
+                    ad_indices=ad_index_set,
+                    silence_indices=silence_index_set,
+                    audio_envelope=audio_envelope,
+                ),
+                beats_table=_beats_table(missing_beats),
+            )
+            raw_retry = navy.chat_completion(
+                api_key=api_key, base_url=base_url, model=model,
+                messages=[{"role": "user", "content": retry_prompt}],
+                timeout=240.0, temperature=0.3, max_tokens=32768,
+            )
+            for m2 in _parse_matches_resilient(_extract_json_block(raw_retry)):
+                bi = int(m2.get("beat") or 0)
+                if bi and bi not in by_beat:
+                    m2 = dict(m2)
+                    m2["why"] = f"[repescagem] {m2.get('why') or ''}".strip()
+                    by_beat[bi] = m2
+        except Exception:
+            pass  # sem drama: os que sobrarem caem no fallback abaixo
 
     missing = [b.index for b in beats if b.index not in by_beat]
 
@@ -825,6 +887,9 @@ def match_beats_to_cues(
             elif grouped:
                 cue = grouped[0]
                 why = why or "fallback: primeira cena"
+            # Fallback = chute — marca com confidence mínima pro editor
+            # destacar em vermelho (o usuário revisa esses primeiro).
+            confidence = 1
 
         video_start_raw = (cue.start if cue else 0.0) - pad_before
         video_start_raw = max(0.0, video_start_raw)

@@ -335,26 +335,30 @@ class PlanEditor(ctk.CTkToplevel):
         self._queue_thumb(idx, m.video_start)
 
     # ----------------------------------------------------- seletor de cenas
-    def _candidates_for(self, m) -> list:
-        """Timestamps candidatos pro beat: scene changes vizinhas (±45s),
-        runner-up do matcher (quando existe) e a posição atual.
-        Cap de 24, os mais próximos da posição atual.
+    def _candidates_around(self, m, center: float) -> list:
+        """Timestamps candidatos numa janela de ±45s ao redor de `center`
+        (que o usuário pode navegar com ◀/▶ e o campo 'ir pra'). Sempre
+        inclui a posição atual do beat e o runner-up do matcher quando
+        caem dentro da janela. Cap de 24, os mais próximos do centro.
         """
-        cur = m.video_start
-        cands = {round(cur, 2)}
+        cands = set()
+
+        cur = round(m.video_start, 2)
+        if abs(cur - center) <= 45.0:
+            cands.add(cur)
 
         runner = getattr(m, "runner_up_start", -1.0)
-        if runner is not None and runner >= 0:
+        if runner is not None and runner >= 0 and abs(runner - center) <= 45.0:
             cands.add(round(runner, 2))
 
         if self._scenes:
-            near = [s for s in self._scenes if abs(s - cur) <= 45.0]
-            near.sort(key=lambda s: abs(s - cur))
+            near = [s for s in self._scenes if abs(s - center) <= 45.0]
+            near.sort(key=lambda s: abs(s - center))
             for s in near[:24]:
                 cands.add(round(s, 2))
         else:
             for d in (-4.0, -2.0, -1.0, 1.0, 2.0, 4.0):
-                cands.add(round(max(0.0, cur + d), 2))
+                cands.add(round(max(0.0, center + d), 2))
 
         return sorted(cands)
 
@@ -391,59 +395,130 @@ class PlanEditor(ctk.CTkToplevel):
         ctk.CTkLabel(
             win,
             text="Escolha o momento do episódio que esse beat deve mostrar "
-                 "(borda verde = atual, 🥈 = 2ª opção do matcher):",
+                 "(borda verde = atual, 🥈 = 2ª opção do matcher). Use ◀ ▶ "
+                 "ou digite um tempo pra navegar por TODO o episódio:",
             font=style.FONT_SMALL, text_color="#888",
-        ).pack(padx=16, pady=(0, 8), anchor="w")
+            wraplength=920, justify="left",
+        ).pack(padx=16, pady=(0, 6), anchor="w")
+
+        # --- barra de navegação temporal ---
+        nav = ctk.CTkFrame(win, fg_color="transparent")
+        nav.pack(fill="x", padx=16, pady=(0, 6))
+
+        state = {"center": m.video_start, "gen": 0}
+
+        pos_lbl = ctk.CTkLabel(
+            nav, text="", font=style.FONT_SMALL, text_color="#aaa", width=150,
+        )
 
         grid = ctk.CTkScrollableFrame(win, fg_color=style.BG_DARK)
         grid.pack(fill="both", expand=True, padx=16, pady=(0, 10))
-
         cols = 4
         for c in range(cols):
             grid.grid_columnconfigure(c, weight=1)
 
-        cands = self._candidates_for(m)
-        for j, t in enumerate(cands):
-            is_cur = abs(t - cur) < 0.05
-            is_runner = runner is not None and abs(t - runner) < 0.05
+        def _refresh():
+            state["gen"] += 1
+            gen = state["gen"]
+            for w in grid.winfo_children():
+                w.destroy()
+            center = state["center"]
+            pos_lbl.configure(text=f"janela: {_fmt_t(max(0, center - 45))} – {_fmt_t(center + 45)}")
 
-            cell = ctk.CTkFrame(
-                grid, fg_color=style.SURFACE, corner_radius=8,
-                border_width=2,
-                border_color=_BORDER_CURRENT if is_cur else _BORDER_DEFAULT,
-            )
-            cell.grid(row=j // cols, column=j % cols, padx=5, pady=5, sticky="n")
+            for j, t in enumerate(self._candidates_around(m, center)):
+                is_cur = abs(t - cur) < 0.05
+                is_runner = runner is not None and abs(t - runner) < 0.05
 
-            lbl = ctk.CTkLabel(
-                cell, text="…", width=_PICKER_THUMB[0], height=_PICKER_THUMB[1],
-                fg_color="#101010", corner_radius=6, font=style.FONT_LABEL,
-                text_color="#555",
-            )
-            lbl.pack(padx=6, pady=(6, 2))
-            lbl.configure(cursor="hand2")
-
-            tag = ""
-            if is_cur:
-                tag = " · atual"
-            elif is_runner:
-                tag = " · 🥈 opção B"
-            ctk.CTkLabel(
-                cell, text=f"{_fmt_t(t)}{tag}", font=style.FONT_SMALL,
-                text_color="#27ae60" if is_cur else ("#f1c40f" if is_runner else "#aaa"),
-            ).pack(pady=(0, 6))
-
-            if not is_cur:
-                lbl.bind(
-                    "<Button-1>",
-                    lambda _e, i=idx, ts=t, w=win: self._apply_choice(i, ts, w),
+                cell = ctk.CTkFrame(
+                    grid, fg_color=style.SURFACE, corner_radius=8,
+                    border_width=2,
+                    border_color=_BORDER_CURRENT if is_cur else _BORDER_DEFAULT,
                 )
-                cell.configure(cursor="hand2")
+                cell.grid(row=j // cols, column=j % cols, padx=5, pady=5, sticky="n")
 
-            key = f"pick{idx}_{j}"
-            self._loader.submit(
-                t,
-                lambda p, l=lbl, k=key: self._set_thumb_image(l, p, _PICKER_THUMB, k),
-            )
+                lbl = ctk.CTkLabel(
+                    cell, text="…", width=_PICKER_THUMB[0], height=_PICKER_THUMB[1],
+                    fg_color="#101010", corner_radius=6, font=style.FONT_LABEL,
+                    text_color="#555",
+                )
+                lbl.pack(padx=6, pady=(6, 2))
+                lbl.configure(cursor="hand2")
+
+                tag = ""
+                if is_cur:
+                    tag = " · atual"
+                elif is_runner:
+                    tag = " · 🥈 opção B"
+                ctk.CTkLabel(
+                    cell, text=f"{_fmt_t(t)}{tag}", font=style.FONT_SMALL,
+                    text_color="#27ae60" if is_cur else ("#f1c40f" if is_runner else "#aaa"),
+                ).pack(pady=(0, 6))
+
+                if not is_cur:
+                    lbl.bind(
+                        "<Button-1>",
+                        lambda _e, i=idx, ts=t, w=win: self._apply_choice(i, ts, w),
+                    )
+                    cell.configure(cursor="hand2")
+
+                key = f"pick{idx}_{gen}_{j}"
+                self._loader.submit(
+                    t,
+                    lambda p, l=lbl, k=key: self._set_thumb_image(l, p, _PICKER_THUMB, k),
+                )
+
+        def _shift(delta):
+            state["center"] = max(0.0, state["center"] + delta)
+            _refresh()
+
+        def _jump():
+            raw = jump_entry.get().strip().replace(",", ".")
+            try:
+                if ":" in raw:
+                    mm, ss = raw.split(":", 1)
+                    t = int(mm) * 60 + float(ss)
+                else:
+                    t = float(raw)
+                state["center"] = max(0.0, t)
+                _refresh()
+            except ValueError:
+                pass
+
+        ctk.CTkButton(
+            nav, text="◀ 1 min", width=70, height=28, command=lambda: _shift(-60),
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="◀ 15s", width=60, height=28, command=lambda: _shift(-15),
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+        ).pack(side="left", padx=(6, 0))
+        pos_lbl.pack(side="left", padx=10)
+        ctk.CTkButton(
+            nav, text="15s ▶", width=60, height=28, command=lambda: _shift(15),
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+        ).pack(side="left")
+        ctk.CTkButton(
+            nav, text="1 min ▶", width=70, height=28, command=lambda: _shift(60),
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+        ).pack(side="left", padx=(6, 0))
+
+        jump_entry = ctk.CTkEntry(
+            nav, width=80, height=28, placeholder_text="mm:ss",
+            font=style.FONT_SMALL,
+        )
+        jump_entry.pack(side="right", padx=(6, 0))
+        jump_entry.bind("<Return>", lambda _e: _jump())
+        ctk.CTkButton(
+            nav, text="Ir pra ⏱", width=70, height=28, command=_jump,
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+        ).pack(side="right")
+
+        _refresh()
 
         ctk.CTkButton(
             win, text="Fechar", command=win.destroy,

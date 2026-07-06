@@ -19,7 +19,7 @@ def chat_completion_stream(
     model: str,
     messages: List[Dict],
     timeout: float = 120.0,
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,
 ) -> Iterator[str]:
     """Itera deltas de texto (strings) vindos de POST /v1/chat/completions com stream=True.
 
@@ -128,7 +128,7 @@ def chat_completion(
     messages: List[Dict],
     timeout: float = 180.0,
     temperature: float = None,
-    max_tokens: int = 8192,
+    max_tokens: int = 16384,
 ) -> str:
     """Versão não-streaming. Retorna a string completa ou levanta NavyError.
 
