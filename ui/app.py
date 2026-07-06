@@ -139,6 +139,18 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.btn_model_selector.pack(side="right", padx=(0, 8))
 
+        # Versão atual + verificação manual de atualização. O check da
+        # abertura é silencioso; este botão dá feedback no log em ambos
+        # os casos (tem update / já está na última).
+        self.btn_version = ctk.CTkButton(
+            self.top_frame, text=f"v{config.VERSAO_ATUAL}",
+            command=self._check_updates_manual,
+            fg_color="transparent", text_color="#888",
+            hover_color=style.HOVER_SUBTLE, font=style.FONT_SMALL,
+            width=58, height=32,
+        )
+        self.btn_version.pack(side="right", padx=(0, 4))
+
         # log central
         self.log_box = ctk.CTkTextbox(
             self, font=style.FONT_LOG,
@@ -226,6 +238,19 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _on_update_error(self, msg):
         self.after(0, self.log, f"[ERRO] Falha ao baixar atualização: {msg}")
+
+    def _check_updates_manual(self):
+        """Botão vX.Y.Z do topo — verificação com feedback no log."""
+        self.log(f"🔄 Verificando atualizações (você está na v{config.VERSAO_ATUAL})...")
+        updater.check_async(
+            self._on_update_available,
+            on_no_update=lambda: self.after(
+                0, self.log, "✅ Você já está na versão mais recente.",
+            ),
+            on_error=lambda msg: self.after(
+                0, self.log, f"[AVISO] Não consegui verificar: {msg}",
+            ),
+        )
 
     # ---------------------------------------------------------------- modelos
     def _toggle_model(self):

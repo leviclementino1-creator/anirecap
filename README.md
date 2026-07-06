@@ -29,11 +29,19 @@ TikTok / Reels / YouTube Shorts.
 
 ## Instalação
 
-Baixa o `AniRecap.zip` da [release mais recente](../../releases/latest),
-extrai e abre `AniRecap.exe`. Na primeira execução, configura as API keys
-em ⚙️. O app se atualiza sozinho quando sai versão nova.
+Baixa o `AniRecap-Setup-X.Y.Z.exe` da [release mais recente](../../releases/latest)
+e executa — instala tudo (ffmpeg e mkvtoolnix inclusos), cria atalho e
+pronto. Não precisa de admin. Na primeira execução, configura as API keys
+em ⚙️.
 
-Trilhas de fundo: coloca seus `.mp3` na pasta `music/` ao lado do exe.
+O app se atualiza sozinho quando sai versão nova (avisa na abertura; dá
+pra checar manualmente no botão `vX.Y.Z` do topo). Configurações e músicas
+são preservadas em updates.
+
+Trilhas de fundo: coloca seus `.mp3` na pasta `music/` da instalação
+(`%LOCALAPPDATA%\AniRecap\music`).
+
+Prefere portátil? A release também tem o `AniRecap.zip` — extrai e usa.
 
 ## Build a partir do código
 

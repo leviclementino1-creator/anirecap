@@ -42,11 +42,42 @@ def _is_newer(remote: str, local: str) -> bool:
     return _parse_ver(remote) > _parse_ver(local)
 
 
-def check_async(on_update_available):
+def _pick_asset(assets: list) -> str:
+    """Escolhe o melhor asset da release: instalador Setup.exe > zip.
+
+    O instalador atualiza tudo (arquivos, atalhos) e preserva config/music
+    via regras do Inno Setup. O zip é o fallback pra instalações portáteis
+    antigas ou releases sem instalador.
+    """
+    setup = next(
+        (
+            a.get("browser_download_url")
+            for a in assets
+            if str(a.get("name", "")).lower().endswith(".exe")
+            and "setup" in str(a.get("name", "")).lower()
+        ),
+        "",
+    )
+    if setup:
+        return setup
+    return next(
+        (
+            a.get("browser_download_url")
+            for a in assets
+            if str(a.get("name", "")).lower().endswith(".zip")
+        ),
+        "",
+    )
+
+
+def check_async(on_update_available, on_no_update=None, on_error=None):
     """Consulta a release mais recente no GitHub em thread daemon.
 
-    Chama `on_update_available(zip_url, nova_versao)` se existir versão
-    mais nova com asset .zip. Silencia erros de rede/404 (sem popup).
+    - `on_update_available(url, nova_versao)`: existe versão mais nova.
+    - `on_no_update()`: opcional — já está na mais recente (usado pelo
+      botão manual de "verificar atualização"; o check automático da
+      abertura não passa esse callback e fica silencioso).
+    - `on_error(msg)`: opcional — falha de rede/API (idem, só manual).
     """
     def _run():
         try:
@@ -56,34 +87,72 @@ def check_async(on_update_available):
             )
             data = r.json()
             tag = data.get("tag_name") or ""
-            assets = data.get("assets") or []
-            zip_url = next(
-                (
-                    a.get("browser_download_url")
-                    for a in assets
-                    if str(a.get("name", "")).lower().endswith(".zip")
-                ),
-                "",
-            )
-            if tag and zip_url and _is_newer(tag, VERSAO_ATUAL):
-                on_update_available(zip_url, tag.lstrip("vV"))
-        except Exception:
-            pass
+            url = _pick_asset(data.get("assets") or [])
+            if tag and url and _is_newer(tag, VERSAO_ATUAL):
+                on_update_available(url, tag.lstrip("vV"))
+            elif on_no_update:
+                on_no_update()
+        except Exception as e:
+            if on_error:
+                on_error(str(e))
 
     threading.Thread(target=_run, daemon=True).start()
 
 
 def baixar_e_reiniciar(link_download: str, on_error, on_progress=None):
-    """Baixa o zip da release, extrai e agenda a troca via .bat.
+    """Baixa e aplica a atualização. Dois modos, decididos pela URL:
+
+    - `...Setup.exe` (instalador Inno): baixa pro %TEMP% e roda silencioso
+      (/VERYSILENT). O instalador fecha o app, troca os arquivos, preserva
+      config.json + music/ (regras do .iss) e reabre o app (/RELAUNCH=1).
+    - `.zip` (fallback portátil): extrai e troca a pasta via .bat+robocopy.
 
     `on_progress(pct)`: callback opcional (0-100) durante o download.
-    O processo atual é encerrado no fim — o .bat espera o exe destravar,
-    copia os arquivos novos por cima e reabre o app.
     """
     if not getattr(sys, "frozen", False):
         on_error("Atualização automática só funciona no .exe distribuído.")
         return
 
+    if link_download.lower().endswith(".exe"):
+        _update_via_installer(link_download, on_error, on_progress)
+        return
+
+    _update_via_zip(link_download, on_error, on_progress)
+
+
+def _update_via_installer(link_download: str, on_error, on_progress=None):
+    import tempfile
+    setup_path = os.path.join(tempfile.gettempdir(), "AniRecap-Setup.exe")
+    try:
+        resposta = requests.get(link_download, stream=True, timeout=30)
+        resposta.raise_for_status()
+        total = int(resposta.headers.get("content-length") or 0)
+        done = 0
+        with open(setup_path, "wb") as f:
+            for chunk in resposta.iter_content(chunk_size=1024 * 256):
+                f.write(chunk)
+                done += len(chunk)
+                if on_progress and total:
+                    on_progress(int(done * 100 / total))
+
+        subprocess.Popen(
+            [
+                setup_path,
+                "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                "/RELAUNCH=1",
+            ],
+            creationflags=0x00000008,
+        )
+        os._exit(0)
+    except Exception as e:
+        try:
+            os.remove(setup_path)
+        except OSError:
+            pass
+        on_error(str(e))
+
+
+def _update_via_zip(link_download: str, on_error, on_progress=None):
     app_dir = os.path.dirname(sys.executable)
     exe_name = os.path.basename(sys.executable)
     zip_path = os.path.join(app_dir, "update_download.zip")

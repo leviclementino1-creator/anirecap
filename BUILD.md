@@ -73,18 +73,34 @@ Pra mandar pra outra pessoa, zipa a pasta `dist\AniRecap\` inteira. Tudo o que p
 
 **IMPORTANTE**: antes de zipar, troca o `config.json` da pasta por um sanitizado (sem API keys). O auto-update preserva o `config.json` de quem recebe, então cada pessoa configura as próprias keys uma vez só.
 
+## Instalador (AniRecap-Setup-X.Y.Z.exe)
+
+Um único .exe que instala tudo (app + ffmpeg + mkvtoolnix + atalhos + desinstalador), sem pedir admin — vai pra `%LOCALAPPDATA%\AniRecap`.
+
+Pré-requisito (uma vez): `winget install -e --id JRSoftware.InnoSetup`
+
+```bat
+build.bat            REM gera dist\AniRecap\
+REM ... copia binários + config sanitizado pra dist\AniRecap\ ...
+build-installer.bat  REM gera dist\AniRecap-Setup-X.Y.Z.exe
+```
+
+O instalador **preserva** `config.json` e `music/` em updates e desinstalação.
+
 ## Publicar release (auto-update)
 
-O app checa `github.com/<GITHUB_REPO>/releases/latest` na abertura (repo configurado em `config.py`). Pra publicar uma versão nova:
+O app checa `github.com/<GITHUB_REPO>/releases/latest` na abertura (repo configurado em `config.py`) e também no botão `vX.Y.Z` do topo da janela. Pra publicar uma versão nova:
 
 1. Bumpa `VERSAO_ATUAL` em `config.py` (ex: `"2.1.0"`)
-2. `build.bat` → zipa `dist\AniRecap\` como `AniRecap.zip` (config.json sanitizado!)
-3. Cria a release com tag `v2.1.0` e anexa o zip:
+2. `build.bat` → monta `dist\AniRecap\` (binários + config sanitizado!)
+3. `build-installer.bat` → `dist\AniRecap-Setup-2.1.0.exe`
+4. (Opcional) zipa `dist\AniRecap\` como `AniRecap.zip` (versão portátil)
+5. Cria a release com tag `v2.1.0` e anexa:
    ```bat
-   gh release create v2.1.0 AniRecap.zip --title "AniRecap 2.1.0" --notes "changelog aqui"
+   gh release create v2.1.0 dist\AniRecap-Setup-2.1.0.exe dist\AniRecap.zip --title "AniRecap 2.1.0" --notes "changelog aqui"
    ```
 
-Quem tiver versão antiga recebe o popup de atualização na próxima abertura. O updater baixa o zip, troca a pasta inteira (exe + `_internal/` + binários) e **preserva** `config.json` e `music/` do usuário.
+Quem tiver versão antiga recebe o popup na próxima abertura. O updater baixa o **Setup.exe** (preferido; roda silencioso e reabre o app) ou o zip (fallback portátil). Nos dois caminhos, `config.json` e `music/` do usuário são **preservados**.
 
 Tamanho típico:
 - Sem UPX, sem AD: ~150MB
