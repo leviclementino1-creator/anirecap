@@ -102,6 +102,8 @@ O app checa `github.com/<GITHUB_REPO>/releases/latest` na abertura (repo configu
 
 Quem tiver versão antiga recebe o popup na próxima abertura. O updater baixa o **Setup.exe** (preferido; roda silencioso e reabre o app) ou o zip (fallback portátil). Nos dois caminhos, `config.json` e `music/` do usuário são **preservados**.
 
+**Depois de publicar, apague a pasta `dist\AniRecap\`** (o zip e o Setup ficam). Ela contém o config sanitizado (sem keys) — abrir esse exe sem querer parece que "as keys sumiram". O ⚙️ mostra o caminho do config em uso justamente pra diagnosticar isso.
+
 Tamanho típico:
 - Sem UPX, sem AD: ~150MB
 - Com UPX, sem AD: ~80MB

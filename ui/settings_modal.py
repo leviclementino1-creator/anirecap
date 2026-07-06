@@ -32,6 +32,13 @@ def open_settings(parent, current: dict, on_saved):
     container = ctk.CTkScrollableFrame(modal, fg_color="transparent")
     container.pack(fill="both", expand=True, padx=20, pady=20)
 
+    # Caminho do config em uso — responde "qual cópia do app estou rodando?"
+    # (a instalada tem as keys do usuário; a pasta de distribuição vem vazia).
+    ctk.CTkLabel(
+        container, text=f"Config: {config.CONFIG_FILE}",
+        font=("Inter", 9), text_color="#666", wraplength=420, justify="left",
+    ).pack(anchor="w", pady=(0, 10))
+
     def add_field(label_text, value, show=None):
         lbl = ctk.CTkLabel(container, text=label_text, font=style.FONT_LABEL)
         lbl.pack(anchor="w", pady=(8, 2))
