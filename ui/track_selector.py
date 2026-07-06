@@ -38,7 +38,7 @@ def choose_track(parent, subtitle_tracks, ad_tracks=None):
     modal.grab_set()
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 

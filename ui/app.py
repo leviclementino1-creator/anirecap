@@ -58,7 +58,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.loading_dots_count = 0
 
         try:
-            self.iconbitmap(resource_path("Ancopy_icon.ico"))
+            self.iconbitmap(resource_path("AniRecap_icon.ico"))
         except Exception:
             pass
 

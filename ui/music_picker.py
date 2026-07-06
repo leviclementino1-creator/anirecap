@@ -25,7 +25,7 @@ def open_music_picker(parent, current_cfg, on_saved):
     modal.grab_set()
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 

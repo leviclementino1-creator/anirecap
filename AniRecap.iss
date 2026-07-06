@@ -43,6 +43,8 @@ ShowLanguageDialog=no
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=AniRecap_icon.ico
 VersionInfoVersion={#AppVersion}
 
 [Languages]

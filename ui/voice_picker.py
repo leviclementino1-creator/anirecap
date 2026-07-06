@@ -63,7 +63,7 @@ def choose_voice(parent, api_key: str, current_voice_id: str = ""):
     modal.grab_set()
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 

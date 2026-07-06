@@ -20,7 +20,7 @@ def open_metadata_modal(parent, titles: List[str], description: str):
     modal.resizable(False, False)
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 

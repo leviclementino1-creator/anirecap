@@ -124,7 +124,7 @@ class PlanEditor(ctk.CTkToplevel):
         except Exception:
             pass
         try:
-            self.iconbitmap(resource_path("Ancopy_icon.ico"))
+            self.iconbitmap(resource_path("AniRecap_icon.ico"))
         except Exception:
             pass
 

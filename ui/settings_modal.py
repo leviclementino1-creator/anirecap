@@ -22,7 +22,7 @@ def open_settings(parent, current: dict, on_saved):
     modal.resizable(False, False)
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 

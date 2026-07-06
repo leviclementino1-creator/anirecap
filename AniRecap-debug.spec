@@ -15,8 +15,8 @@ block_cipher = None
 datas = []
 datas += collect_data_files("customtkinter")
 datas += collect_data_files("tkinterdnd2")
-if os.path.isfile("Ancopy_icon.ico"):
-    datas += [("Ancopy_icon.ico", ".")]
+if os.path.isfile("AniRecap_icon.ico"):
+    datas += [("AniRecap_icon.ico", ".")]
 
 hiddenimports = []
 hiddenimports += collect_submodules("customtkinter")
@@ -79,7 +79,7 @@ exe = EXE(
     upx=False,          # <<< SEM compressão pra evitar bug de UPX
     console=True,       # <<< COM console pra ver stack trace
     disable_windowed_traceback=False,
-    icon="Ancopy_icon.ico" if os.path.isfile("Ancopy_icon.ico") else None,
+    icon="AniRecap_icon.ico" if os.path.isfile("AniRecap_icon.ico") else None,
 )
 
 coll = COLLECT(

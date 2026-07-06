@@ -29,8 +29,8 @@ datas += collect_data_files("customtkinter")
 datas += collect_data_files("tkinterdnd2")
 
 # Ícone do app (raiz do projeto, opcional — existe se user adicionou)
-if os.path.isfile("Ancopy_icon.ico"):
-    datas += [("Ancopy_icon.ico", ".")]
+if os.path.isfile("AniRecap_icon.ico"):
+    datas += [("AniRecap_icon.ico", ".")]
 
 # ─── Hidden imports (módulos que PyInstaller não detecta auto) ───────
 hiddenimports = []
@@ -141,7 +141,7 @@ exe = EXE(
     ],
     console=False,      # windowed mode (sem console preto)
     disable_windowed_traceback=False,
-    icon="Ancopy_icon.ico" if os.path.isfile("Ancopy_icon.ico") else None,
+    icon="AniRecap_icon.ico" if os.path.isfile("AniRecap_icon.ico") else None,
 )
 
 # ─── COLLECT (gera a pasta dist/AniRecap/ com tudo dentro) ─────────────

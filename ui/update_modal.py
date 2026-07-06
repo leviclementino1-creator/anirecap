@@ -15,7 +15,7 @@ def show(parent, link_download: str, nova_versao: str, on_error):
     modal.resizable(False, False)
 
     try:
-        modal.iconbitmap(resource_path("Ancopy_icon.ico"))
+        modal.iconbitmap(resource_path("AniRecap_icon.ico"))
     except Exception:
         pass
 
