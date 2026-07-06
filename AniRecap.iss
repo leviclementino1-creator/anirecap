@@ -46,6 +46,7 @@ UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=AniRecap_icon.ico
 VersionInfoVersion={#AppVersion}
+SetupMutex=AniRecapSetupMutex
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -66,10 +67,13 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; WorkingDir explícito: sem ele, o app relançado herda o diretório
+; temporário do instalador — que é APAGADO logo depois, derrubando o
+; processo filho. Era por isso que o relaunch pós-update não segurava.
 ; Instalação manual: checkbox "Abrir o AniRecap" no fim do wizard
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 ; Update silencioso (/VERYSILENT /RELAUNCH=1): reabre o app sozinho
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: ShouldRelaunch
+Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]
 function ShouldRelaunch: Boolean;

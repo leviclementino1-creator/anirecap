@@ -122,7 +122,9 @@ def baixar_e_reiniciar(link_download: str, on_error, on_progress=None):
 
 def _update_via_installer(link_download: str, on_error, on_progress=None):
     import tempfile
+    import time
     setup_path = os.path.join(tempfile.gettempdir(), "AniRecap-Setup.exe")
+    log_path = os.path.join(tempfile.gettempdir(), "anirecap-update.log")
     try:
         resposta = requests.get(link_download, stream=True, timeout=30)
         resposta.raise_for_status()
@@ -135,15 +137,30 @@ def _update_via_installer(link_download: str, on_error, on_progress=None):
                 if on_progress and total:
                     on_progress(int(done * 100 / total))
 
-        subprocess.Popen(
-            [
-                setup_path,
-                "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                "/RELAUNCH=1",
-            ],
-            creationflags=0x00000008,
+        cmd = [
+            setup_path,
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+            "/RELAUNCH=1", f"/LOG={log_path}",
+        ]
+
+        # O antivírus pode matar/bloquear o instalador recém-baixado na
+        # primeira execução (escaneando 200MB). Estratégia: lança, espera
+        # alguns segundos e confere se o processo sobreviveu. Se morreu
+        # cedo, espera o scan terminar e tenta mais uma vez. Só fecha o
+        # app quando o instalador está comprovadamente vivo — assim uma
+        # falha vira mensagem de erro em vez de "cliquei e nada aconteceu".
+        for tentativa in (1, 2):
+            proc = subprocess.Popen(cmd, cwd=tempfile.gettempdir())
+            time.sleep(4.0)
+            if proc.poll() is None:
+                os._exit(0)  # instalador rodando — ele fecha e reabre o app
+            if tentativa == 1:
+                time.sleep(6.0)  # dá tempo pro scan do antivírus acabar
+
+        on_error(
+            "O instalador fechou antes de começar (antivírus?). "
+            f"Tente de novo, ou rode manualmente: {setup_path}"
         )
-        os._exit(0)
     except Exception as e:
         try:
             os.remove(setup_path)
