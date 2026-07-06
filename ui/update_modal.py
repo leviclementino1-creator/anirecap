@@ -51,9 +51,20 @@ def show(parent, link_download: str, nova_versao: str, on_error):
             text="Baixando...", state="disabled", fg_color=style.BTN_DEFAULT_HOVER,
         )
         parent.update()
+
+        def _progress(pct):
+            # Chamado da thread de download — agenda na thread da UI
+            try:
+                parent.after(
+                    0, lambda: btn_atualizar.configure(text=f"Baixando... {pct}%"),
+                )
+            except Exception:
+                pass
+
         threading.Thread(
             target=updater.baixar_e_reiniciar,
             args=(link_download, on_error),
+            kwargs={"on_progress": _progress},
             daemon=True,
         ).start()
 

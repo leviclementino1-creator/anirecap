@@ -10,12 +10,16 @@ import os
 
 from utils.paths import application_path
 
-VERSAO_ATUAL = "1.2.4"
-URL_VERSAO = "https://ancopyattapi.vercel.app/versao.json"
+APP_NAME = "AniRecap"
+VERSAO_ATUAL = "2.0.0"
 
-# Desligado durante o desenvolvimento da v2. Quando for publicar a próxima
-# versão no endpoint da Vercel, religa isto e suba VERSAO_ATUAL.
-CHECK_UPDATES = False
+# Repo do GitHub usado pelo auto-update (updater.py consulta
+# /releases/latest). Publicar release com tag "vX.Y.Z" + asset AniRecap.zip.
+GITHUB_REPO = "leviclementino1-creator/anirecap"
+
+# Auto-update via GitHub Releases. Se o repo ainda não existe ou não tem
+# release, o check falha silencioso (sem popup) — seguro deixar ligado.
+CHECK_UPDATES = True
 
 DEFAULT_NAVY_BASE_URL = "https://api.navy/v1"
 DEFAULT_MODEL = "gemini-2.5-flash"

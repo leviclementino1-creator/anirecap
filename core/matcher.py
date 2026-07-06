@@ -20,7 +20,7 @@ from providers import navy
 # Versão semântica do prompt — cache key usa ISSO em vez do prompt literal.
 # Bumpar quando a mudança deve invalidar caches (nova regra, regra alterada).
 # Ajustes cosméticos (typo, reword) NÃO precisam bumpar.
-MATCHER_PROMPT_VERSION = "matcher-v9-audio-archetypes-diversity-2026-04-28"
+MATCHER_PROMPT_VERSION = "matcher-v10-confidence-runnerup-2026-07-06"
 
 
 MATCHER_PROMPT = """\
@@ -203,15 +203,29 @@ REGRAS IMPORTANTES:
 10. O campo `why` é curto (3-7 palavras). NÃO USE aspas duplas " dentro do
     valor — use aspas simples ' ou parênteses. NÃO use quebras de linha.
 
+11. CONFIDENCE + RUNNER-UP (obrigatório em CADA match):
+    - "confidence": inteiro 1-5 = quão certo você está de que a cue escolhida
+      mostra VISUALMENTE o que o beat narra.
+        5 = certeza (fala literal citada ou ação explícita na cue)
+        4 = forte correspondência
+        3 = razoável, mas existe outra cue plausível
+        2 = dúvida real entre 2+ cues
+        1 = chute (nenhuma cue casa bem)
+      SEJA HONESTO — confidence baixa é ÚTIL (o usuário revisa esses beats
+      primeiro no editor). NÃO infle o número.
+    - "runner_up_cue_id": a SEGUNDA melhor cue pra esse beat (inteiro,
+      diferente de cue_id). OBRIGATÓRIA quando confidence <= 3. Use null
+      quando confidence >= 4 e não existe alternativa realista.
+
 SAÍDA: APENAS JSON válido. Começa direto com `{{`. Inclui OBRIGATORIAMENTE
 uma entrada "matches" com EXATAMENTE {n_beats} itens (beats de 1 a {n_beats}):
 
 {{
   "matches": [
-    {{"beat": 1, "cue_id": 42, "why": "cena do convite da Amane"}},
-    {{"beat": 2, "cue_id": 45, "why": "..."}},
+    {{"beat": 1, "cue_id": 42, "confidence": 5, "runner_up_cue_id": null, "why": "cena do convite da Amane"}},
+    {{"beat": 2, "cue_id": 45, "confidence": 2, "runner_up_cue_id": 17, "why": "..."}},
     ...
-    {{"beat": {n_beats}, "cue_id": N, "why": "..."}}
+    {{"beat": {n_beats}, "cue_id": N, "confidence": N, "runner_up_cue_id": N, "why": "..."}}
   ]
 }}
 
@@ -228,13 +242,20 @@ class SceneMatch:
     video_end: float
     snapped: bool = False
     why: str = ""
+    # Quão seguro o LLM está do match (1=chute, 5=certeza; 0=não informado).
+    # Beats com confidence <= 2 aparecem destacados no editor de plano.
+    confidence: int = 0
+    # Timestamp da 2ª melhor opção do LLM (-1 = nenhuma). O editor de plano
+    # oferece como candidato "🥈 opção B" na troca de cena.
+    runner_up_start: float = -1.0
 
     def label(self) -> str:
         snap = " ⇲" if self.snapped else ""
+        conf = f" c{self.confidence}" if self.confidence else ""
         return (
             f"beat {self.beat.index:02d}  "
             f"\"{self.beat.text[:50]}{'...' if len(self.beat.text) > 50 else ''}\"  "
-            f"→  mkv {self.video_start:6.2f}-{self.video_end:6.2f}s{snap}  "
+            f"→  mkv {self.video_start:6.2f}-{self.video_end:6.2f}s{snap}{conf}  "
             f"({self.why})"
         )
 
@@ -435,6 +456,8 @@ def _beats_table(beats: List[NarrationBeat]) -> str:
 
 _REGEX_MATCH = re.compile(
     r'"beat"\s*:\s*(\d+)[^{}]*?"cue_id"\s*:\s*(\d+)'
+    r'(?:[^{}]*?"confidence"\s*:\s*(\d+))?'
+    r'(?:[^{}]*?"runner_up_cue_id"\s*:\s*(\d+))?'
     r'(?:[^{}]*?"why"\s*:\s*"([^"\n]*))?',
     flags=re.DOTALL,
 )
@@ -463,7 +486,9 @@ def _parse_matches_resilient(body: str) -> list:
         out.append({
             "beat": bi,
             "cue_id": int(m.group(2)),
-            "why": (m.group(3) or "").strip() or "(recuperado via regex)",
+            "confidence": int(m.group(3)) if m.group(3) else 0,
+            "runner_up_cue_id": int(m.group(4)) if m.group(4) else None,
+            "why": (m.group(5) or "").strip() or "(recuperado via regex)",
         })
     return out
 
@@ -753,7 +778,14 @@ def match_beats_to_cues(
         m = by_beat.get(b.index)
         cue = None
         why = ""
+        confidence = 0
+        runner_up_start = -1.0
         if m is not None:
+            # Confidence 1-5 do LLM (0 = não informado / parse falhou)
+            try:
+                confidence = max(0, min(5, int(m.get("confidence") or 0)))
+            except (ValueError, TypeError):
+                confidence = 0
             cue_id = int(m.get("cue_id") or 0)
             if 1 <= cue_id <= len(grouped):
                 cue = grouped[cue_id - 1]
@@ -772,6 +804,16 @@ def match_beats_to_cues(
                     # Marca no why pra debug
                     cue_id = best_i + 1
             why = str(m.get("why") or "").strip()
+
+            # Runner-up: 2ª melhor cue do LLM — vira candidato "opção B"
+            # no editor de plano. Só aceita id válido e diferente da escolhida.
+            try:
+                ru = m.get("runner_up_cue_id")
+                ru = int(ru) if ru is not None else 0
+            except (ValueError, TypeError):
+                ru = 0
+            if 1 <= ru <= len(grouped) and grouped[ru - 1] is not cue:
+                runner_up_start = grouped[ru - 1].start
 
         if cue is None:
             # Fallback de CONTINUIDADE: usa a cena do beat anterior (se houver).
@@ -813,6 +855,7 @@ def match_beats_to_cues(
             beat=b, cue=cue,
             video_start=video_start, video_end=video_end,
             snapped=snapped, why=why,
+            confidence=confidence, runner_up_start=runner_up_start,
         ))
 
     if missing:

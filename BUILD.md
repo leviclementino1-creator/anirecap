@@ -1,6 +1,6 @@
-# Build do Ancopy.exe
+# Build do AniRecap.exe
 
-Gera o executável `dist/Ancopy/Ancopy.exe` via PyInstaller.
+Gera o executável `dist/AniRecap/AniRecap.exe` via PyInstaller.
 
 ## Pré-requisitos
 
@@ -13,13 +13,13 @@ Gera o executável `dist/Ancopy/Ancopy.exe` via PyInstaller.
 build.bat
 ```
 
-Output: `dist\Ancopy\Ancopy.exe` (pasta inteira com o exe + libs ao lado).
+Output: `dist\AniRecap\AniRecap.exe` (pasta inteira com o exe + libs ao lado).
 
 O script faz tudo:
 1. Verifica Python e PyInstaller (instala se faltar)
 2. Verifica deps do `requirements.txt`
 3. Limpa `build/` e `dist/` anteriores
-4. Roda `pyinstaller Ancopy.spec`
+4. Roda `pyinstaller AniRecap.spec`
 
 Demora ~1-3 minutos.
 
@@ -28,7 +28,7 @@ Demora ~1-3 minutos.
 ```bat
 pip install pyinstaller
 pip install -r requirements.txt
-pyinstaller --clean --noconfirm Ancopy.spec
+pyinstaller --clean --noconfirm AniRecap.spec
 ```
 
 ## Depois de buildar
@@ -37,7 +37,7 @@ O `.exe` precisa de binários externos pra extrair legendas e cortar vídeo:
 
 ### Opção 1 — Binários junto do .exe (portátil)
 
-Copie pra `dist\Ancopy\`:
+Copie pra `dist\AniRecap\`:
 - `ffmpeg.exe` ([download](https://www.gyan.dev/ffmpeg/builds/))
 - `mkvmerge.exe` e `mkvextract.exe` ([MKVToolNix](https://mkvtoolnix.download/))
 
@@ -59,7 +59,7 @@ Abre o `.exe`, vai em ⚙️ → **"Pasta dos binários"** e aponta pra onde os 
 
 - **Primeira execução do AD**: baixa modelo Whisper `medium` (~500MB) do HuggingFace. Cache em `%TEMP%\ancopy\cache\`.
 - **`lbpcascade_animeface.xml`**: baixado on-demand do GitHub.
-- **config.json**: salvo ao lado do `Ancopy.exe` na primeira execução.
+- **config.json**: salvo ao lado do `AniRecap.exe` na primeira execução.
 - **Antivírus** às vezes flagga PyInstaller. Se acusar falso positivo, adiciona o `.exe` na exceção do Defender/AV.
 
 ## Reduzir tamanho do .exe
@@ -69,7 +69,22 @@ Abre o `.exe`, vai em ⚙️ → **"Pasta dos binários"** e aponta pra onde os 
 
 ## Distribuição
 
-Pra mandar pra outra pessoa, zipa a pasta `dist\Ancopy\` inteira. Tudo o que precisa pra rodar tá nela.
+Pra mandar pra outra pessoa, zipa a pasta `dist\AniRecap\` inteira. Tudo o que precisa pra rodar tá nela.
+
+**IMPORTANTE**: antes de zipar, troca o `config.json` da pasta por um sanitizado (sem API keys). O auto-update preserva o `config.json` de quem recebe, então cada pessoa configura as próprias keys uma vez só.
+
+## Publicar release (auto-update)
+
+O app checa `github.com/<GITHUB_REPO>/releases/latest` na abertura (repo configurado em `config.py`). Pra publicar uma versão nova:
+
+1. Bumpa `VERSAO_ATUAL` em `config.py` (ex: `"2.1.0"`)
+2. `build.bat` → zipa `dist\AniRecap\` como `AniRecap.zip` (config.json sanitizado!)
+3. Cria a release com tag `v2.1.0` e anexa o zip:
+   ```bat
+   gh release create v2.1.0 AniRecap.zip --title "AniRecap 2.1.0" --notes "changelog aqui"
+   ```
+
+Quem tiver versão antiga recebe o popup de atualização na próxima abertura. O updater baixa o zip, troca a pasta inteira (exe + `_internal/` + binários) e **preserva** `config.json` e `music/` do usuário.
 
 Tamanho típico:
 - Sem UPX, sem AD: ~150MB
@@ -80,8 +95,8 @@ Tamanho típico:
 
 **"DLL load failed"** — geralmente é Visual C++ Redistributable faltando. Instala o [VC++ 2015-2022 Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-**"customtkinter assets missing"** — `pyinstaller --clean --noconfirm Ancopy.spec` (o `--clean` força recompilar com data files atualizados).
+**"customtkinter assets missing"** — `pyinstaller --clean --noconfirm AniRecap.spec` (o `--clean` força recompilar com data files atualizados).
 
-**"tkinterdnd2 não funciona"** — em casos raros, copia manualmente `tkdnd/` da `tkinterdnd2` pra `dist\Ancopy\_internal\tkinterdnd2\`.
+**"tkinterdnd2 não funciona"** — em casos raros, copia manualmente `tkdnd/` da `tkinterdnd2` pra `dist\AniRecap\_internal\tkinterdnd2\`.
 
 **Build muito lento** — primeira vez sempre é mais lenta (PyInstaller analisa imports). Builds subsequentes usam cache em `build/`.

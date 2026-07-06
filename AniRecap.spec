@@ -1,7 +1,7 @@
-# PyInstaller spec — gera o .exe do Ancopy.
+# PyInstaller spec — gera o .exe do AniRecap.
 #
 # Estratégia "one-folder" (mais rápido pra carregar que one-file).
-# Saída: dist/Ancopy/Ancopy.exe (pasta com .exe + libs ao lado).
+# Saída: dist/AniRecap/AniRecap.exe (pasta com .exe + libs ao lado).
 #
 # Decisões de empacotamento:
 # - ffmpeg / mkvmerge / mkvextract: NÃO incluídos (cada ~80MB). User
@@ -11,7 +11,7 @@
 # - lbpcascade_animeface.xml: NÃO incluído (baixa on-demand).
 # - customtkinter + tkinterdnd2 assets: incluídos via collect_data.
 #
-# Pra rodar: `pyinstaller Ancopy.spec` (depois de `pip install pyinstaller`).
+# Pra rodar: `pyinstaller AniRecap.spec` (depois de `pip install pyinstaller`).
 # Ou simplesmente clica em `build.bat`.
 
 import os
@@ -128,7 +128,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Ancopy",
+    name="AniRecap",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -144,7 +144,7 @@ exe = EXE(
     icon="Ancopy_icon.ico" if os.path.isfile("Ancopy_icon.ico") else None,
 )
 
-# ─── COLLECT (gera a pasta dist/Ancopy/ com tudo dentro) ─────────────
+# ─── COLLECT (gera a pasta dist/AniRecap/ com tudo dentro) ─────────────
 coll = COLLECT(
     exe,
     a.binaries,
@@ -153,5 +153,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="Ancopy",
+    name="AniRecap",
 )

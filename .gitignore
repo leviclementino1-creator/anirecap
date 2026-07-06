@@ -46,3 +46,6 @@ music/
 override_short_script.txt
 override_short_script.bak
 override_plan.json
+
+# ───────── Docs internos (não publicar) ─────────
+HANDOFF-FABLE.md

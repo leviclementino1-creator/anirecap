@@ -1,4 +1,4 @@
-"""Janela principal do Ancopy.
+"""Janela principal do AniRecap.
 
 Toda a camada de UI vive aqui; parsing, LLM e update são delegados para
 `core/`, `providers/` e `updater.py`. A Fase 0 preserva o fluxo do app 1.2.4:
@@ -27,14 +27,14 @@ from core import (
 from core.cue import Cue
 from providers.navy import NavyError
 from ui import (
-    metadata_modal, music_picker, settings_modal, style, track_selector,
-    update_modal,
+    metadata_modal, music_picker, plan_editor, settings_modal, style,
+    track_selector, update_modal,
 )
 from utils.binaries import BinaryNotFound
 from utils.paths import resource_path
 
 try:
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ajk.ancopy.app.1.0')
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('ajk.anirecap.app.2.0')
 except Exception:
     pass
 
@@ -47,7 +47,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
 
-        self.title(f"Ancopy v{config.VERSAO_ATUAL}")
+        self.title(f"{config.APP_NAME} v{config.VERSAO_ATUAL}")
         self.geometry("650x550")
         self.resizable(False, False)
 
@@ -144,8 +144,14 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self, font=style.FONT_LOG,
             fg_color=style.BG_DARK, text_color=style.LOG_TEXT,
         )
-        self.log_box.grid(row=1, column=0, padx=20, pady=(0, 70), sticky="nsew")
+        self.log_box.grid(row=1, column=0, padx=20, pady=(0, 84), sticky="nsew")
         self.log_box.configure(state="disabled")
+
+        # Barra de progresso do render — fica escondida até renderizar.
+        # Determinate durante o corte dos clipes (i/n), indeterminate no
+        # render final (duração desconhecida).
+        self.progress_bar = ctk.CTkProgressBar(self, height=10, corner_radius=4)
+        self.progress_bar.set(0)
 
         self.btn_copy = ctk.CTkButton(
             self, text="📋", command=self._copy_to_clipboard,
@@ -1304,7 +1310,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             binaries_dir=self.cfg.get("binaries_dir", ""),
                             use_cache=True,
                         )
-                        self._finish_plan_and_render(plan, scenes=scenes_for_override)
+                        self.after(
+                            0, self._open_plan_editor, plan, scenes_for_override,
+                        )
                         return
                 except Exception as e:
                     self.after(0, self.log, f"[AVISO] Falha lendo override_plan.json: {e}")
@@ -1496,7 +1504,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     serial = _json.dumps([
                         {"beat_index": m.beat.index,
                          "video_start": m.video_start, "video_end": m.video_end,
-                         "why": m.why, "snapped": m.snapped}
+                         "why": m.why, "snapped": m.snapped,
+                         "confidence": m.confidence,
+                         "runner_up_start": m.runner_up_start}
                         for m in plan
                     ])
                     cache.set_llm(cache_parts, serial)
@@ -1522,6 +1532,10 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             video_end=float(item["video_end"]),
                             snapped=bool(item.get("snapped")),
                             why=str(item.get("why") or ""),
+                            confidence=int(item.get("confidence") or 0),
+                            runner_up_start=float(
+                                item.get("runner_up_start", -1.0)
+                            ),
                         ))
                 except Exception as e:
                     self.after(0, self.log, f"[AVISO] Cache corrompido, refazendo: {e}")
@@ -1552,6 +1566,8 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                         "duration": round(m.beat.duration, 3),
                         "snapped": m.snapped,
                         "why": m.why,
+                        "confidence": m.confidence,
+                        "runner_up_start": round(m.runner_up_start, 3),
                     }
                     for m in plan
                 ]
@@ -1565,7 +1581,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             except Exception as e:
                 self.after(0, self.log, f"[AVISO] Não consegui salvar snapshot: {e}")
 
-            self._finish_plan_and_render(plan, scenes=scenes)
+            self.after(0, self._open_plan_editor, plan, scenes)
             return
 
         except Exception as e:
@@ -1576,14 +1592,93 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda: self.btn_plano.configure(state="normal"))
             self.after(0, lambda: self.btn_clear.configure(state="normal"))
 
+    # ------------------------------------------- Editor visual do plano
+    def _open_plan_editor(self, plan, scenes):
+        """Abre o editor de plano (thread da UI). O render só acontece
+        quando o usuário clica 🎬 Renderizar dentro do editor."""
+        self.scene_plan = plan
+        low_conf = sum(1 for m in plan if 1 <= m.confidence <= 2)
+        msg = f"🎬 Plano com {len(plan)} beats pronto — revise no editor."
+        if low_conf:
+            msg += f" ⚠ {low_conf} beat(s) com confiança baixa (borda vermelha)."
+        self.log(msg)
+        plan_editor.open_plan_editor(
+            parent=self,
+            plan=plan,
+            scenes=scenes or [],
+            mkv_path=self.mkv_path,
+            binaries_dir=self.cfg.get("binaries_dir", ""),
+            on_render=lambda p: self._start_render(p, scenes),
+            on_save_override=self._save_override_plan,
+        )
+
+    def _start_render(self, plan, scenes):
+        """Callback do botão Renderizar do editor (thread da UI)."""
+        self.scene_plan = plan
+        self.btn_plano.configure(state="disabled")
+        self.btn_clear.configure(state="disabled")
+        threading.Thread(
+            target=self._finish_plan_and_render, args=(plan, scenes),
+            daemon=True,
+        ).start()
+
+    def _save_override_plan(self, plan):
+        """Grava override_plan.json na raiz do app — trava o plano atual
+        pra próximas execuções de 🎬 Plano (mesmo formato que _call_plan lê)."""
+        from utils.paths import application_path
+        path = os.path.join(application_path(), "override_plan.json")
+        data = [
+            {
+                "video_start": round(m.video_start, 3),
+                "why": m.why,
+                "snapped": m.snapped,
+            }
+            for m in plan
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
+        self.log(
+            f"📌 Plano fixado em override_plan.json — apague o arquivo pra "
+            "voltar ao matcher automático."
+        )
+
+    # -------------------------------------------------- barra de progresso
+    def _progress_show(self, determinate: bool = True):
+        try:
+            self.progress_bar.stop()
+        except Exception:
+            pass
+        self.progress_bar.configure(
+            mode="determinate" if determinate else "indeterminate",
+        )
+        if determinate:
+            self.progress_bar.set(0)
+        self.progress_bar.place(
+            relx=0.5, rely=0.868, anchor="center", relwidth=0.9,
+        )
+        if not determinate:
+            self.progress_bar.start()
+
+    def _progress_set(self, value: float):
+        self.progress_bar.set(max(0.0, min(1.0, value)))
+
+    def _progress_hide(self):
+        try:
+            self.progress_bar.stop()
+        except Exception:
+            pass
+        self.progress_bar.place_forget()
+
     def _finish_plan_and_render(self, plan, scenes=None):
         """Parte final do pipeline: log do plano + cut + captions + render.
-        Extraído de _call_plan pra poder ser chamado do caminho override também.
+        Chamado em thread de background quando o usuário confirma o plano
+        no editor visual.
 
         `scenes`: lista de timestamps de scene changes (segundos). Usado pelo
         cut_clips pra decidir multi-cut (sub-clipes por beat).
         """
         try:
+            self.after(0, self._progress_show)
             # Log do plano (inserção instantânea)
             self.after(0, lambda: self._prepare_log_section("--- PLANO DE CORTES ---"))
             snapped_count = sum(1 for m in plan if m.snapped)
@@ -1611,6 +1706,11 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 scene_changes=scenes or [],
                 subclip_target_duration=float(
                     self.cfg.get("subclip_target_duration", 2.0)
+                ),
+                # Corte ocupa 0→85% da barra; o render final (duração
+                # desconhecida) roda em modo indeterminate.
+                on_progress=lambda i, n: self.after(
+                    0, self._progress_set, 0.85 * i / max(1, n),
                 ),
             )
 
@@ -1642,6 +1742,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.after(0, self.log, "🎵 Sem trilha sonora.")
 
             self.after(0, self.log, "🎞️ Montando short final (9:16 + blur + captions)...")
+            self.after(0, lambda: self._progress_show(determinate=False))
             final_path = os.path.join(self.work_dir, "short_final.mp4")
             video.render_short(
                 clip_paths=clip_paths,
@@ -1669,8 +1770,9 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
         except Exception as e:
             self.is_loading = False
             self.after(0, self._clear_loading_line)
-            self.after(0, self.log, f"[ERRO] Plano falhou: {e}")
+            self.after(0, self.log, f"[ERRO] Render falhou: {e}")
         finally:
+            self.after(0, self._progress_hide)
             self.after(0, lambda: self.btn_plano.configure(state="normal"))
             self.after(0, lambda: self.btn_clear.configure(state="normal"))
 

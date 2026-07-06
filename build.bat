@@ -1,6 +1,6 @@
 @echo off
-REM ─── Build do Ancopy.exe ──────────────────────────────────────────
-REM Roda pyinstaller com o Ancopy.spec. Output em dist\Ancopy\Ancopy.exe.
+REM ─── Build do AniRecap.exe ──────────────────────────────────────────
+REM Roda pyinstaller com o AniRecap.spec. Output em dist\AniRecap\AniRecap.exe.
 REM
 REM Pré-requisitos:
 REM   - Python 3.11+ no PATH
@@ -14,7 +14,7 @@ REM ─────────────────────────�
 setlocal
 
 echo.
-echo === Ancopy build ===
+echo === AniRecap build ===
 echo.
 
 REM 1. Verifica python
@@ -57,7 +57,7 @@ if exist dist (
 REM 5. Roda PyInstaller
 echo.
 echo Buildando... (pode demorar 1-3 minutos)
-python -m PyInstaller --clean --noconfirm Ancopy.spec
+python -m PyInstaller --clean --noconfirm AniRecap.spec
 if errorlevel 1 (
     echo.
     echo [ERRO] Build falhou. Veja mensagens acima.
@@ -68,11 +68,11 @@ REM 6. Resultado
 echo.
 echo ============================================
 echo Build OK!
-echo Executavel: dist\Ancopy\Ancopy.exe
+echo Executavel: dist\AniRecap\AniRecap.exe
 echo ============================================
 echo.
 echo IMPORTANTE — antes de distribuir:
-echo  1. Copie ffmpeg.exe, mkvmerge.exe e mkvextract.exe pra dist\Ancopy\
+echo  1. Copie ffmpeg.exe, mkvmerge.exe e mkvextract.exe pra dist\AniRecap\
 echo     (ou configure binaries_dir nas configuracoes do app).
 echo  2. Primeira execucao do AD baixa modelo Whisper (~500MB).
 echo  3. config.json eh criado ao lado do .exe.

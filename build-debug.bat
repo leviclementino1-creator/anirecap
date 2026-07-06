@@ -1,7 +1,7 @@
 @echo off
-REM ─── Build do Ancopy-debug.exe ────────────────────────────────────
+REM ─── Build do AniRecap-debug.exe ────────────────────────────────────
 REM Versao com console aberto pra ver erros quando o exe nao abre.
-REM Output: dist\Ancopy-debug\Ancopy-debug.exe
+REM Output: dist\AniRecap-debug\AniRecap-debug.exe
 REM
 REM Diferenças do build.bat normal:
 REM - Console habilitado (janela preta com stack trace)
@@ -11,7 +11,7 @@ REM ─────────────────────────�
 setlocal
 
 echo.
-echo === Ancopy-debug build ===
+echo === AniRecap-debug build ===
 echo.
 
 REM 1. PyInstaller
@@ -21,12 +21,12 @@ if errorlevel 1 (
 )
 
 REM 2. Limpa builds anteriores do debug
-if exist build\Ancopy-debug rmdir /s /q build\Ancopy-debug
-if exist dist\Ancopy-debug rmdir /s /q dist\Ancopy-debug
+if exist build\AniRecap-debug rmdir /s /q build\AniRecap-debug
+if exist dist\AniRecap-debug rmdir /s /q dist\AniRecap-debug
 
 REM 3. Build
 echo Buildando com console + sem UPX...
-python -m PyInstaller --clean --noconfirm Ancopy-debug.spec
+python -m PyInstaller --clean --noconfirm AniRecap-debug.spec
 if errorlevel 1 (
     echo [ERRO] Build falhou.
     exit /b 1
@@ -34,17 +34,17 @@ if errorlevel 1 (
 
 REM 4. Copia config.json se existir
 if exist config.json (
-    copy /Y config.json dist\Ancopy-debug\ >nul
+    copy /Y config.json dist\AniRecap-debug\ >nul
     echo config.json copiado.
 )
 
 echo.
 echo ============================================
 echo Build OK!
-echo Executavel: dist\Ancopy-debug\Ancopy-debug.exe
+echo Executavel: dist\AniRecap-debug\AniRecap-debug.exe
 echo.
 echo Pra testar: clique no exe acima ou rode:
-echo   dist\Ancopy-debug\Ancopy-debug.exe
+echo   dist\AniRecap-debug\AniRecap-debug.exe
 echo.
 echo Como esta com console aberto, qualquer erro
 echo de import vai aparecer na janela preta.

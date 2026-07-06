@@ -1,11 +1,11 @@
-# PyInstaller spec — versão DEBUG do Ancopy.
+# PyInstaller spec — versão DEBUG do AniRecap.
 #
-# Diferenças do Ancopy.spec normal:
+# Diferenças do AniRecap.spec normal:
 # - console=True → janela preta com stack trace de erros
 # - upx=False    → sem compressão (elimina UPX como variável de bug)
-# - name="Ancopy-debug" → output em dist/Ancopy-debug/Ancopy-debug.exe
+# - name="AniRecap-debug" → output em dist/AniRecap-debug/AniRecap-debug.exe
 #
-# Use quando o Ancopy.exe normal não abre — vai aparecer o erro no console.
+# Use quando o AniRecap.exe normal não abre — vai aparecer o erro no console.
 
 import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -72,7 +72,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Ancopy-debug",
+    name="AniRecap-debug",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -90,5 +90,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Ancopy-debug",
+    name="AniRecap-debug",
 )
