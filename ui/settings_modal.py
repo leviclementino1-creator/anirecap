@@ -144,6 +144,18 @@ def open_settings(parent, current: dict, on_saved):
     )
     switch_cache.pack(anchor="w", pady=(4, 4))
 
+    # Auto-abrir resultados no player (desligado = silencioso)
+    switch_autoopen_var = ctk.BooleanVar(
+        value=bool(current.get("auto_open_results", False))
+    )
+    switch_autoopen = ctk.CTkSwitch(
+        container,
+        text="Abrir narração/vídeo no player ao concluir (faz barulho)",
+        variable=switch_autoopen_var,
+        font=style.FONT_LABEL,
+    )
+    switch_autoopen.pack(anchor="w", pady=(4, 4))
+
     row_cache = ctk.CTkFrame(container, fg_color="transparent")
     row_cache.pack(fill="x", pady=(0, 4))
 
@@ -387,6 +399,7 @@ def open_settings(parent, current: dict, on_saved):
             # Ritmo dos cortes — tempo médio por sub-cena (segundos)
             "subclip_target_duration": float(var_sub.get()),
             "use_cache": bool(switch_cache_var.get()),
+            "auto_open_results": bool(switch_autoopen_var.get()),
             "binaries_dir": entry_bin.get().strip(),
         })
         config.save(new_cfg)

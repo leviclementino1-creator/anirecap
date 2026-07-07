@@ -1182,11 +1182,12 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             0, self.log,
                             "Agora clique em 🎬 Plano pra montar o plano de cortes."
                         )
-                    try:
-                        if os.name == "nt":
-                            os.startfile(out_mp3)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    if self.cfg.get("auto_open_results"):
+                        try:
+                            if os.name == "nt":
+                                os.startfile(out_mp3)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
                     return
 
             result = tts.synthesize(
@@ -1252,11 +1253,12 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             if self.mkv_path and self.cues:
                 self.after(0, lambda: self.btn_plano.configure(state="normal"))
                 self.after(0, self.log, "Agora clique em 🎬 Plano pra montar o plano de cortes.")
-            try:
-                if os.name == "nt":
-                    os.startfile(result.audio_path)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            if self.cfg.get("auto_open_results"):
+                try:
+                    if os.name == "nt":
+                        os.startfile(result.audio_path)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
         except tts.TTSError as e:
             self.is_loading = False
@@ -1871,11 +1873,17 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 0, self.log,
                 f"✅ Short pronto! {size_mb:.1f}MB — {final_path}",
             )
-            try:
-                if os.name == "nt":
-                    os.startfile(final_path)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            if self.cfg.get("auto_open_results"):
+                try:
+                    if os.name == "nt":
+                        os.startfile(final_path)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            else:
+                self.after(
+                    0, self.log,
+                    "🔇 (player não abre sozinho — ative em ⚙️ se preferir)",
+                )
 
         except Exception as e:
             self.is_loading = False

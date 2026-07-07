@@ -11,7 +11,7 @@ import os
 from utils.paths import application_path
 
 APP_NAME = "AniRecap"
-VERSAO_ATUAL = "2.3.2"
+VERSAO_ATUAL = "2.3.3"
 
 # Repo do GitHub usado pelo auto-update (updater.py consulta
 # /releases/latest). Publicar release com tag "vX.Y.Z" + asset AniRecap.zip.
@@ -72,6 +72,10 @@ _DEFAULTS = {
     "subclip_target_duration": 2.0,
     # Cache em disco (economiza tokens em testes repetidos)
     "use_cache": False,
+    # Abrir narração/vídeo no player automaticamente ao concluir cada
+    # etapa. Desligado por padrão: o player abrindo sozinho toca áudio
+    # sem aviso ("notificação com barulho").
+    "auto_open_results": False,
 }
 
 
