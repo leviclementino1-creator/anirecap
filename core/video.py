@@ -3,10 +3,17 @@
 Pipeline:
 1. `cut_clips` → pra cada match no plano, ffmpeg extrai um mp4 silencioso
 2. `render_short` → concat + 9:16 com blur background + burn subtitles + mux narração
+
+Render INCREMENTAL: cada clipe é identificado pela assinatura do que o
+produz (mkv + sub-clipes + nº de frames) e vai pra um cache em disco.
+Trocar a cena de 1 beat no editor re-corta só os clipes afetados — os
+outros 25+ são reutilizados e o render vira questão de segundos.
 """
+import hashlib
 import math
 import os
 import subprocess
+import tempfile
 from typing import List, Optional, Tuple
 
 from core.matcher import SceneMatch
@@ -14,6 +21,29 @@ from core.scene_detect import pick_subclips
 from utils.binaries import find_binary
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+_CLIP_CACHE_DIR = os.path.join(tempfile.gettempdir(), "ancopy", "cache", "clips")
+
+
+def _mkv_key(mkv_path: str) -> str:
+    try:
+        size = os.path.getsize(mkv_path)
+    except OSError:
+        size = 0
+    h = hashlib.sha256()
+    h.update(mkv_path.encode("utf-8"))
+    h.update(str(size).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _clip_signature(subclips: List[tuple], nb_frames: int) -> str:
+    """Assinatura determinística da 'receita' de um clipe. Mesmos
+    sub-clipes + mesmo nº de frames = mesmo mp4, pode reutilizar."""
+    h = hashlib.sha256()
+    for s, d in subclips:
+        h.update(f"{s:.3f}:{d:.3f};".encode())
+    h.update(str(nb_frames).encode())
+    h.update(str(TARGET_FPS).encode())
+    return h.hexdigest()[:20]
 
 # fps fixo dos clipes — garante que cada clipe tem `round(dur * fps)` frames
 # exatos. Sem isso, o encoder pode encerrar em keyframe diferente do `-t`,
@@ -30,6 +60,7 @@ def cut_clips(
     on_progress=None,
     scene_changes: Optional[List[float]] = None,
     subclip_target_duration: float = 2.0,
+    stats_out: Optional[dict] = None,
 ) -> List[str]:
     """Corta cada beat do plano em um mp4 separado.
 
@@ -55,7 +86,10 @@ def cut_clips(
             prev = s
         return prev
 
-    paths: List[str] = []
+    # ── PASSE 1: calcula a "receita" de cada clipe (sem ffmpeg) ─────────
+    # O estado sequencial (drift, overlap guard, cena anterior) é resolvido
+    # aqui; o corte em si vira uma função pura da receita — cacheável.
+    recipes: List[tuple] = []  # (subclips, nb_frames)
     last_scene_start: Optional[float] = None  # cena onde o beat anterior TERMINOU
     prev_video_start: Optional[float] = None  # range temporal do beat anterior
     prev_video_end: Optional[float] = None
@@ -66,8 +100,6 @@ def cut_clips(
     # a soma das durações REAIS converge pra soma das beat_durations.
     drift_acc = 0.0
     for i, m in enumerate(plan):
-        out = os.path.join(out_dir, f"clip_{i:03d}.mp4")
-
         # Sub-clipes começam em m.video_start (posição que o matcher escolheu),
         # NÃO em m.cue.start — quando matcher snappou, video_start é o ponto bom.
         cue_start = m.video_start
@@ -114,6 +146,26 @@ def cut_clips(
         nb_frames = max(1, round(target_dur * TARGET_FPS))
         real_dur = nb_frames / TARGET_FPS
         drift_acc = target_dur - real_dur  # erro residual pro próximo clipe
+
+        recipes.append((subclips, nb_frames))
+
+    # ── PASSE 2: corta (ou reutiliza do cache) ──────────────────────────
+    cache_dir = os.path.join(_CLIP_CACHE_DIR, _mkv_key(mkv_path))
+    os.makedirs(cache_dir, exist_ok=True)
+
+    paths: List[str] = []
+    reused = 0
+    for i, (subclips, nb_frames) in enumerate(recipes):
+        m = plan[i]
+        out = os.path.join(
+            cache_dir, f"{_clip_signature(subclips, nb_frames)}.mp4",
+        )
+        if os.path.isfile(out) and os.path.getsize(out) > 0:
+            reused += 1
+            paths.append(out)
+            if on_progress:
+                on_progress(i + 1, len(plan))
+            continue
 
         if len(subclips) == 1:
             # === SINGLE-CUT (modo simples) ===
@@ -180,20 +232,29 @@ def cut_clips(
                 out,
             ]
 
+        # Escreve num .part e renomeia no fim — um corte interrompido nunca
+        # deixa mp4 truncado no cache (que seria reutilizado pra sempre).
+        tmp_out = out + ".part.mp4"
+        cmd[-1] = tmp_out
         r = subprocess.run(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             creationflags=_NO_WINDOW,
         )
-        if r.returncode != 0 or not os.path.isfile(out):
+        if r.returncode != 0 or not os.path.isfile(tmp_out):
             raise RuntimeError(
                 f"Falha cortando clipe {i+1}/{len(plan)} "
                 f"(mkv {m.video_start:.2f}s, {len(subclips)} subs): "
                 f"{r.stderr[:300]}"
             )
+        os.replace(tmp_out, out)
         paths.append(out)
         if on_progress:
             on_progress(i + 1, len(plan))
+
+    if stats_out is not None:
+        stats_out["reused"] = reused
+        stats_out["cut"] = len(plan) - reused
 
     return paths
 

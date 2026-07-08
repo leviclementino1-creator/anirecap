@@ -17,6 +17,7 @@ import customtkinter as ctk
 
 from core import thumbs
 from core.beat_archetypes import classify_beats
+from core.scene_detect import pick_subclips
 from ui import style
 from utils.paths import resource_path
 
@@ -106,10 +107,14 @@ class PlanEditor(ctk.CTkToplevel):
         on_save_override=None, # callback(plan) quando usuário fixa o plano
         from_override: bool = False,   # plano veio de override_plan.json
         on_clear_override=None,        # callback() pra destravar e regerar
+        subclip_target: float = 2.0,   # ritmo dos cortes (⚙️) pro preview fiel
     ):
         super().__init__(parent)
         self._from_override = from_override
         self._on_clear_override = on_clear_override
+        self._subclip_target = subclip_target
+        self._binaries_dir = binaries_dir
+        self._preview: dict = {}    # idx -> estado da prévia animada
         self._matches = plan
         self._scenes = sorted(scenes or [])
         self._mkv = mkv_path
@@ -284,15 +289,29 @@ class PlanEditor(ctk.CTkToplevel):
         )
         time_lbl.grid(row=2, column=1, sticky="w", pady=(2, 10))
 
-        btn = ctk.CTkButton(
-            card, text="🔄 Trocar", width=90, height=30,
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.grid(row=0, column=2, rowspan=3, padx=(6, 12))
+
+        ctk.CTkButton(
+            btns, text="🔄 Trocar", width=90, height=30,
             command=lambda i=idx: self._open_picker(i),
             fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
             font=style.FONT_SMALL,
-        )
-        btn.grid(row=0, column=2, rowspan=3, padx=(6, 12))
+        ).pack()
 
-        self._cards[idx] = {"card": card, "thumb": thumb, "time": time_lbl}
+        preview_btn = ctk.CTkButton(
+            btns, text="▶ Prévia", width=90, height=30,
+            command=lambda i=idx: self._toggle_preview(i),
+            fg_color=style.BTN_DEFAULT_FG, hover_color=style.BTN_DEFAULT_HOVER,
+            font=style.FONT_SMALL,
+            state="normal" if _HAS_PIL else "disabled",
+        )
+        preview_btn.pack(pady=(6, 0))
+
+        self._cards[idx] = {
+            "card": card, "thumb": thumb, "time": time_lbl,
+            "preview_btn": preview_btn,
+        }
 
     # ------------------------------------------------------------- thumbnails
     def _queue_all_thumbs(self):
@@ -365,6 +384,96 @@ class PlanEditor(ctk.CTkToplevel):
         # fura a fila do loader — a cena recém-escolhida já está no cache
         # de disco (o seletor acabou de exibi-la), então troca em <1s.
         self._queue_thumb(idx, m.video_start, priority=True)
+
+    # ---------------------------------------------------- prévia animada
+    # O thumbnail é 1 frame, mas o corte tem 2-3s — pode ter flash,
+    # transição ou a personagem sair do quadro. O ▶ toca o corte REAL
+    # (mesmos sub-clipes que o render vai usar), silencioso, no próprio
+    # card. Frames extraídos a 12fps via ffmpeg e cacheados em disco.
+    def _preview_segments(self, m) -> list:
+        """Sub-clipes que o render usará pra este beat (aproximação fiel:
+        sem o overlap-guard entre beats, que depende dos vizinhos)."""
+        try:
+            cue_end = max(
+                m.video_end,
+                m.cue.end if m.cue else m.video_end,
+            )
+            subs = pick_subclips(
+                cue_start=m.video_start,
+                cue_end=cue_end,
+                beat_duration=m.beat.duration,
+                scenes=self._scenes,
+                target_subclip_duration=self._subclip_target,
+            )
+            return subs or [(m.video_start, m.beat.duration)]
+        except Exception:
+            return [(m.video_start, m.beat.duration)]
+
+    def _toggle_preview(self, idx: int):
+        st = self._preview.get(idx)
+        if st and st.get("on"):
+            self._stop_preview(idx)
+            return
+
+        btn = self._cards[idx]["preview_btn"]
+        btn.configure(text="⏳", state="disabled")
+        m = self._matches[idx]
+        segments = self._preview_segments(m)
+
+        def _worker():
+            paths = thumbs.extract_preview_frames(
+                self._mkv, segments, self._binaries_dir,
+            )
+            if self._loader.closed:
+                return
+            try:
+                self.after(0, self._start_preview, idx, paths)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_preview(self, idx: int, paths: list):
+        btn = self._cards[idx]["preview_btn"]
+        if not paths or not _HAS_PIL:
+            try:
+                btn.configure(text="▶ Prévia", state="normal")
+            except Exception:
+                pass
+            return
+        frames = [
+            ctk.CTkImage(Image.open(p), size=_CARD_THUMB) for p in paths
+        ]
+        self._preview[idx] = {"frames": frames, "pos": 0, "on": True}
+        btn.configure(text="⏹ Parar", state="normal")
+        self._tick_preview(idx)
+
+    def _tick_preview(self, idx: int):
+        st = self._preview.get(idx)
+        if not st or not st.get("on") or self._loader.closed:
+            return
+        try:
+            self._cards[idx]["thumb"].configure(
+                image=st["frames"][st["pos"]], text="",
+            )
+        except Exception:
+            return  # janela fechada
+        st["pos"] = (st["pos"] + 1) % len(st["frames"])
+        self.after(83, lambda: self._tick_preview(idx))  # ~12fps
+
+    def _stop_preview(self, idx: int):
+        st = self._preview.get(idx)
+        if st:
+            st["on"] = False
+            st["frames"] = []
+        try:
+            self._cards[idx]["preview_btn"].configure(
+                text="▶ Prévia", state="normal",
+            )
+        except Exception:
+            pass
+        # volta pro thumbnail estático da posição atual
+        self._queue_thumb(idx, self._matches[idx].video_start, priority=True)
 
     # ----------------------------------------------------- seletor de cenas
     def _candidates_around(self, m, center: float) -> list:
@@ -559,6 +668,9 @@ class PlanEditor(ctk.CTkToplevel):
         ).pack(pady=(0, 12))
 
     def _apply_choice(self, idx: int, new_start: float, picker):
+        st = self._preview.get(idx)
+        if st and st.get("on"):
+            self._stop_preview(idx)  # prévia antiga não sobrescreve o thumb novo
         m = self._matches[idx]
         m.video_start = new_start
         m.video_end = new_start + m.beat.duration
@@ -625,7 +737,7 @@ class PlanEditor(ctk.CTkToplevel):
 def open_plan_editor(
     parent, plan, scenes, mkv_path,
     binaries_dir="", on_render=None, on_save_override=None,
-    from_override=False, on_clear_override=None,
+    from_override=False, on_clear_override=None, subclip_target=2.0,
 ) -> PlanEditor:
     """Abre o editor. Deve ser chamado na thread da UI (via parent.after)."""
     return PlanEditor(
@@ -635,4 +747,5 @@ def open_plan_editor(
         on_save_override=on_save_override,
         from_override=from_override,
         on_clear_override=on_clear_override,
+        subclip_target=subclip_target,
     )

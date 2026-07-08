@@ -39,6 +39,60 @@ def thumb_path(mkv_path: str, t: float) -> str:
     )
 
 
+def extract_preview_frames(
+    mkv_path: str,
+    segments: list,
+    binaries_dir: str = "",
+    fps: int = 12,
+    width: int = 384,
+) -> list:
+    """Extrai frames de um ou mais trechos `[(start, dur), ...]` pra montar
+    a prévia animada do corte no editor. Devolve a lista ordenada de jpgs
+    (vazia em falha). Cacheado por (mkv, segmentos) — repetir a prévia é
+    instantâneo.
+    """
+    h = hashlib.sha256()
+    for s, d in segments:
+        h.update(f"{s:.3f}:{d:.3f};".encode())
+    key = h.hexdigest()[:16]
+    out_dir = os.path.join(_CACHE_DIR, _mkv_key(mkv_path), f"prev_{key}")
+
+    def _frames() -> list:
+        try:
+            return sorted(
+                os.path.join(out_dir, f)
+                for f in os.listdir(out_dir)
+                if f.endswith(".jpg")
+            )
+        except OSError:
+            return []
+
+    existing = _frames()
+    if existing:
+        return existing
+
+    try:
+        ffmpeg = find_binary("ffmpeg", binaries_dir)
+    except Exception:
+        return []
+    os.makedirs(out_dir, exist_ok=True)
+
+    for j, (start, dur) in enumerate(segments):
+        cmd = [
+            ffmpeg, "-y",
+            "-ss", f"{max(0.0, start):.3f}",
+            "-i", mkv_path,
+            "-t", f"{max(0.1, dur):.3f}",
+            "-vf", f"fps={fps},scale={width}:-2",
+            "-q:v", "5",
+            # prefixo do segmento mantém a ordem lexicográfica correta
+            os.path.join(out_dir, f"{j:02d}_%03d.jpg"),
+        ]
+        subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW)
+
+    return _frames()
+
+
 def extract_thumb(
     mkv_path: str,
     t: float,

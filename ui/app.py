@@ -1712,6 +1712,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
             on_save_override=self._save_override_plan,
             from_override=from_override,
             on_clear_override=self._clear_override_and_regen,
+            subclip_target=float(self.cfg.get("subclip_target_duration", 2.0)),
         )
 
     def _clear_override_and_regen(self):
@@ -1810,6 +1811,7 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 _shutil.rmtree(clips_dir, ignore_errors=True)
 
             self.after(0, self.log, f"🎬 Cortando {len(plan)} clipes do .mkv...")
+            cut_stats: dict = {}
             clip_paths = video.cut_clips(
                 mkv_path=self.mkv_path,
                 plan=plan,
@@ -1824,7 +1826,14 @@ class SubtitleCleanerApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 on_progress=lambda i, n: self.after(
                     0, self._progress_set, 0.85 * i / max(1, n),
                 ),
+                stats_out=cut_stats,
             )
+            if cut_stats.get("reused"):
+                self.after(
+                    0, self.log,
+                    f"⚡ {cut_stats['reused']} clipe(s) reutilizados do cache "
+                    f"— só {cut_stats.get('cut', 0)} recortados.",
+                )
 
             # 6. Captions word-by-word — posição vertical configurável no ⚙️
             captions_path = os.path.join(self.work_dir, "captions.ass")
